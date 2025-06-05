@@ -1,0 +1,2252 @@
+Bachelor projekt ting
+
+```{r packages, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(rugarch)
+library(fGarch)
+library(quantmod)
+library(tidyverse)
+```
+
+```{r}
+T_ <- 250
+beta <- 0.01
+alpha <- 0.025
+```
+
+
+```{r}
+nu <- c(100,10,5,3)
+ES_int <- sapply(nu, function(d) {
+  integrate(function(q) qt(q, df = d), lower = 0, upper = alpha)$value
+})
+ES <- -1/alpha*ES_int
+VaR1 <- -qt(beta, df = nu)
+VaR <- -qt(alpha, df = nu)
+cbind(VaR1,VaR,ES)
+
+
+ES_int <- sapply(nu, function(d) {
+  integrate(function(q) qstd(q, nu = d), lower = 0, upper = alpha)$value
+})
+ES <- -1/alpha*ES_int
+VaR1 <- -qstd(beta, nu = nu)
+VaR <- -qstd(alpha, nu = nu)
+cbind(VaR1,VaR,ES)
+```
+
+```{r}
+nu <- c(100,10,5,3)
+
+qth0 <- qt(0.025, df=100)
+qth1 <- qth0-qt(0.025, df=nu)
+
+ES_int <- sapply(nu, function(d) {
+  integrate(function(q) qt(q, df = d), lower = 0, upper = alpha)$value
+})
+ES <- -1/alpha*ES_int-qth1
+VaR1 <- -qt(beta, df = nu)-qth1
+VaR <- -qt(alpha, df = nu)-qth1
+cbind(VaR1,VaR,ES)
+
+qth0 <- qstd(0.025, nu=100)
+qth1 <- qth0-qstd(0.025, nu=nu)
+
+ES_int <- sapply(nu, function(d) {
+  integrate(function(q) qstd(q, nu = d), lower = 0, upper = alpha)$value
+})
+ES <- -1/alpha*ES_int-qth1
+VaR1 <- -qstd(beta, nu = nu)-qth1
+VaR <- -qstd(alpha, nu = nu)-qth1
+cbind(VaR1,VaR,ES)
+```
+
+
+
+Figur 2:
+```{r}
+gammas <- c(1, 1.1, 1.2, 1.5)
+x_range <- seq(-6, 6, length.out = 1000)
+
+df <- expand.grid(x = x_range, gamma = gammas)
+df$Density <- dt(df$x / df$gamma, df = 100) / df$gamma
+
+ggplot(df, aes(x = x, y = Density, color = factor(gamma))) +
+  geom_line(linewidth=1) +
+  labs(title = "Scaled t-Distributions", x = "x", y = "Density", color = "gammas")
+```
+
+```{r}
+Z1f <- function(Xdata,VaR,ES) {sum(Xdata*(Xdata + VaR < 0))/(sum(Xdata + VaR < 0)*ES)+1}
+Z2f <- function(Xdata,VaR,ES) {sum(Xdata*(Xdata + VaR < 0)/(T_*alpha*ES))+1}
+Z3f <- function(Xdata,nu){
+  EST <- -1/floor(alpha*T_)*sum(sort(Xdata)[1:floor(alpha*T_)])
+  EV <- -T_/floor(alpha*T_)*integrate(function(p) pbeta(1-p,T_-floor(T_*alpha),floor(T_*alpha))*
+                                        qt(p, df = nu),
+                                      lower = 0,
+                                      upper = 1)$value
+  -EST/EV+1
+}
+Z4f <- function(X,VaR,ES){
+  mean((X+ES)[X+VaR<0])
+}
+Z5f <- function(X,VaR,ES){
+  r <- X
+  q <- -VaR
+  e <- -ES
+  n <- length(r)
+  
+  V <- cbind(alpha - (r <= q),
+             e - q + (r <= q) * (q - r) / alpha)
+  
+  H1 <- aperm(replicate(n, diag(2)))
+  hV1 <- apply(H1, 2, function(x) rowSums(x * V))
+  omega1 <- crossprod(hV1) / n
+  
+  t1 <- sqrt(n) * diag(omega1)^(-1/2) * colMeans(hV1)
+}
+```
+
+
+Figur 3/TABLE 1
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu <- 100
+
+ES_int <- integrate(function(q) qt(q, df= nu), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu)
+VaR1 <- -qt(beta, df = nu)
+
+for (i in 1:M){
+  Xdata <- rt(T_, nu)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1) 
+}
+```
+
+
+```{r}
+nu <- 100
+
+Z1sh1 <- numeric(2*M)
+Z2sh1 <- numeric(2*M)
+Z3sh1 <- numeric(2*M)
+Z4sh1 <- numeric(2*M)
+Z5sh1 <- matrix(NA,nrow = 2*M,2)
+numexh1 <- numeric(M)
+
+ES_int <- integrate(function(q) qt(q, df = nu), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu)
+VaR1 <- -qt(beta, df = nu)
+
+gamma1s <- c(1.1367, 1.3397)
+
+set.seed(2025)
+for (j in 1:2){
+  gamma1 <- gamma1s[j]
+  
+  for (i in 1:M){
+    Xdata <- gamma1*rt(T_, nu)
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+
+```{r}
+Z3df <- data.frame(value = c(Z3s,Z3sh1), gamma = rep(c("1", "1.13", "1.33"), each = M))
+
+x_values <- seq(-0.63, 0.2, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 3),
+  y = c(ecdf(Z3df[Z3df$gamma=="1",1])(x_values),
+        1 - ecdf(Z3df[Z3df$gamma=="1.13",1])(x_values), 
+        1 - ecdf(Z3df[Z3df$gamma=="1.33",1])(x_values)),
+        group = rep(c("1", "1.13", "1.33"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 3, Z3",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(Z3df, aes(x=value, color = gamma))+
+  geom_density(bounds = c(-0.63, 0.2))+
+  labs(
+    title = "Figur 3, Z3",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  theme_minimal()
+```
+
+
+```{r}
+Z2df <- data.frame(value = c(Z2s,Z2sh1), gamma = rep(c("1", "1.13", "1.33"), each = M))
+
+x_values <- seq(-3.8, 1, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 3),
+  y = c(ecdf(Z2df[Z2df$gamma=="1",1])(x_values),
+        1 - ecdf(Z2df[Z2df$gamma=="1.13",1])(x_values), 
+        1 - ecdf(Z2df[Z2df$gamma=="1.33",1])(x_values)),
+        group = rep(c("1", "1.13", "1.33"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 3, Z2",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(Z2df, aes(x=value, color = gamma))+
+  geom_density(bounds = c(-3.8, 1))+
+  labs(
+    title = "Figur 3, Z2",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  theme_minimal()
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("1", "1.13", "1.33"), each = M))
+
+x_values <- seq(-18, 0, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 3),
+  y = c(ecdf(df[df$group=="1",1])(x_values),
+        1-ecdf(df[df$group=="1.13",1])(x_values), 
+        1-ecdf(df[df$group=="1.33",1])(x_values)),
+        group = rep(c("1", "1.13", "1.33"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 3, numexceed",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(df, aes(x=value, color = group))+
+  geom_density()+
+  labs(
+    title = "Figur 3, numexceed",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  xlim(-18,0)+
+  theme_minimal()
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), grp = rep(c("1", "1.13", "1.33"), each = M))
+data <- df[df$grp=="1",1]
+head(data)
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("1", "1.13", "1.33"), each = M)))
+quant <- quantile(df[df$grp=="1",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="1.13",1])(quant[1])
+ecdf(df[df$grp=="1.33",1])(quant[1])
+
+ecdf(df[df$grp=="1.13",1])(quant[2])
+ecdf(df[df$grp=="1.33",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("1", "1.13", "1.33"), each = M)))
+quant <- quantile(df[df$grp=="1",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="1.13",1])(quant[1])
+ecdf(df[df$grp=="1.33",1])(quant[1])
+
+ecdf(df[df$grp=="1.13",1])(quant[2])
+ecdf(df[df$grp=="1.33",1])(quant[2])
+```
+
+TJEK AT POWER FOR Z5 ER BEREGNET KORREKT TEST
+```{r}
+parvec <- c("1", "1.13", "1.33")
+L <- length(parvec)
+df <- data.frame(value = c(Z3s,Z3sh1), grp = rep(parvec, each = M))
+for (i in 2:L){
+  simdf <- df[df$grp == parvec[i],]
+  simdfh0 <- df[df$grp == parvec[1],]
+  pvals <- ecdf(simdfh0$value)(simdf$value)
+  
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("1", "1.13", "1.33"), each = M)))
+quant <- quantile(df[df$grp=="1",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="1.13",1])(quant[1])
+ecdf(df[df$grp=="1.33",1])(quant[1])
+
+ecdf(df[df$grp=="1.13",1])(quant[2])
+ecdf(df[df$grp=="1.33",1])(quant[2])
+```
+
+Z5
+```{r}
+parvec <- c("1", "1.13", "1.33")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Number exceedences power
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("1", "1.13", "1.33"), each = M)))
+quant <- quantile(df[df$grp=="1",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="1.13",1])(quant[1])
+ecdf(df[df$grp=="1.33",1])(quant[1])
+
+ecdf(df[df$grp=="1.13",1])(quant[2])
+ecdf(df[df$grp=="1.33",1])(quant[2])
+```
+
+
+
+
+MERE TABLE 1
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu <- 5
+
+ES_int <- integrate(function(q) qt(q, df= nu), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu)
+VaR1 <- -qt(beta, df = nu)
+
+for (i in 1:M){
+  Xdata <- rt(T_, nu)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1) 
+}
+```
+
+
+```{r}
+nu <- 5
+
+Z1sh1 <- numeric(2*M)
+Z2sh1 <- numeric(2*M)
+Z3sh1 <- numeric(2*M)
+Z4sh1 <- numeric(2*M)
+Z5sh1 <- matrix(NA,nrow = 2*M,2)
+numexh1 <- numeric(M)
+
+ES_int <- integrate(function(q) qt(q, df = nu), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu)
+VaR1 <- -qt(beta, df = nu)
+
+gamma1s <- c(1.2185, 1.5298)
+
+set.seed(2025)
+for (j in 1:2){
+  gamma1 <- gamma1s[j]
+  
+  for (i in 1:M){
+    Xdata <- gamma1*rt(T_, nu)
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), grp = rep(c("1", "1.21", "1.52"), each = M))
+data <- df[df$grp=="1",1]
+head(data)
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("1", "1.21", "1.52"), each = M)))
+quant <- quantile(df[df$grp=="1",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="1.21",1])(quant[1])
+ecdf(df[df$grp=="1.52",1])(quant[1])
+
+ecdf(df[df$grp=="1.21",1])(quant[2])
+ecdf(df[df$grp=="1.52",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("1", "1.21", "1.52"), each = M)))
+quant <- quantile(df[df$grp=="1",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="1.21",1])(quant[1])
+ecdf(df[df$grp=="1.52",1])(quant[1])
+
+ecdf(df[df$grp=="1.21",1])(quant[2])
+ecdf(df[df$grp=="1.52",1])(quant[2])
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("1", "1.21", "1.52"), each = M)))
+quant <- quantile(df[df$grp=="1",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="1.21",1])(quant[1])
+ecdf(df[df$grp=="1.52",1])(quant[1])
+
+ecdf(df[df$grp=="1.21",1])(quant[2])
+ecdf(df[df$grp=="1.52",1])(quant[2])
+```
+
+Z5
+```{r}
+parvec <- c("1", "1.21", "1.52")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("1", "1.21", "1.52"), each = M)))
+quant <- quantile(df[df$grp=="1",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="1.21",1])(quant[1])
+ecdf(df[df$grp=="1.52",1])(quant[1])
+
+ecdf(df[df$grp=="1.21",1])(quant[2])
+ecdf(df[df$grp=="1.52",1])(quant[2])
+```
+
+
+
+
+Figur 6/TABLE 2
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu0 <- 100
+
+ES_int <- integrate(function(q) qt(q, df= nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu0)
+VaR1 <- -qt(beta, df = nu0)
+
+for (i in 1:M){
+  Xdata <- rt(T_, nu0)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu0)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1)
+}
+```
+
+
+```{r}
+nu0 <- 100
+nu1s <- c(10,5,3)
+
+Z1sh1 <- numeric(M)
+Z2sh1 <- numeric(M)
+Z3sh1 <- numeric(M)
+Z4sh1 <- numeric(M)
+Z5sh1 <- matrix(NA,nrow = 3*M,2)
+numexh1 <- numeric(M)
+
+ES_int <- integrate(function(q) qt(q, df = nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu0)
+VaR1 <- -qt(beta, df = nu0)
+
+set.seed(2025)
+for (j in 1:3){
+  nu1 <- nu1s[j]
+  
+  for (i in 1:M){
+    Xdata <- rt(T_, nu1)
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu0)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+
+```{r}
+Z3df <- data.frame(value = c(Z3s,Z3sh1), nu = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-3, 0.5, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(Z3df[Z3df$nu=="100",1])(x_values),
+        1 - ecdf(Z3df[Z3df$nu=="10",1])(x_values), 
+        1 - ecdf(Z3df[Z3df$nu=="5",1])(x_values),
+        1 - ecdf(Z3df[Z3df$nu=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 6, Z3",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(Z3df, aes(x=value, color = nu))+
+  geom_density(bounds = c(-3, 0.5))+
+  labs(
+    title = "Figur 6, Z3",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  theme_minimal()
+```
+
+
+```{r}
+Z2df <- data.frame(value = c(Z2s,Z2sh1), nu = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-6, 1, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(Z2df[Z2df$nu=="100",1])(x_values),
+        1 - ecdf(Z2df[Z2df$nu=="10",1])(x_values), 
+        1 - ecdf(Z2df[Z2df$nu=="5",1])(x_values),
+        1 - ecdf(Z2df[Z2df$nu=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 6, Z2",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(Z2df, aes(x=value, color = nu))+
+  geom_density(bounds = c(-6, 1))+
+  labs(
+    title = "Figur 6, Z2",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  theme_minimal()
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-20, 0, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(df[df$group=="100",1])(x_values),
+        1-ecdf(df[df$group=="10",1])(x_values), 
+        1-ecdf(df[df$group=="5",1])(x_values),
+        1-ecdf(df[df$group=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 6, numexceed",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(df, aes(x=value, color = group))+
+  geom_density()+
+  labs(
+    title = "Figur 6, numexceed",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  xlim(-20,0)+
+  theme_minimal()
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("100", "10", "5", "3"), each = M))
+data <- df[df$group=="100",1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z5 power
+```{r}
+parvec <- c("100", "10", "5", "3")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Number exceedences power
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+
+
+MERE TABLE 2
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu0 <- 10
+
+ES_int <- integrate(function(q) qt(q, df= nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu0)
+VaR1 <- -qt(beta, df = nu0)
+
+for (i in 1:M){
+  Xdata <- rt(T_, nu0)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu0)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1)
+}
+```
+
+
+```{r}
+nu0 <- 10
+nu1s <- c(5,3)
+
+Z1sh1 <- numeric(M)
+Z2sh1 <- numeric(M)
+Z3sh1 <- numeric(M)
+Z4sh1 <- numeric(M)
+Z5sh1 <- matrix(NA,nrow = 2*M,2)
+numexh1 <- numeric(M)
+
+ES_int <- integrate(function(q) qt(q, df = nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu0)
+VaR1 <- -qt(beta, df = nu0)
+
+set.seed(2025)
+for (j in 1:2){
+  nu1 <- nu1s[j]
+  
+  for (i in 1:M){
+    Xdata <- rt(T_, nu1)
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu0)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("10", "5", "3"), each = M))
+data <- df[df$group=="10",1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z5 power
+```{r}
+parvec <- c("10", "5", "3")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Number exceedences power
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+
+
+
+
+Figur 9/RESTEN AF TABLE 2
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu0 <- 100
+
+ES_int <- integrate(function(q) qstd(q, nu= nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qstd(alpha, nu = nu0)
+VaR1 <- -qstd(beta, nu = nu0)
+
+tsd <- sqrt(nu0/(nu0-2))
+for (i in 1:M){
+  Xdata <- rstd(T_, nu = nu0)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu0)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1)
+}
+```
+
+
+```{r}
+nu0 <- 100
+nu1s <- c(10,5,3)
+
+Z1sh1 <- numeric(M)
+Z2sh1 <- numeric(M)
+Z3sh1 <- numeric(M)
+Z4sh1 <- numeric(M)
+Z5sh1 <- matrix(NA,nrow = 3*M,2)
+numexh1 <- numeric(M)
+
+tsd <- sqrt(nu0/(nu0-2))
+ES_int <- integrate(function(q) qstd(q, nu = nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qstd(alpha, nu = nu0)
+VaR1 <- -qstd(beta, nu = nu0)
+
+set.seed(2025)
+for (j in 1:3){
+  nu1 <- nu1s[j]
+  
+  for (i in 1:M){
+    Xdata <- rstd(T_, nu = nu1)
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu0)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+
+```{r}
+Z3df <- data.frame(value = c(Z3s,Z3sh1), nu = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-1.45, 0.25, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(Z3df[Z3df$nu=="100",1])(x_values),
+        1 - ecdf(Z3df[Z3df$nu=="10",1])(x_values), 
+        1 - ecdf(Z3df[Z3df$nu=="5",1])(x_values),
+        1 - ecdf(Z3df[Z3df$nu=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 9, Z3",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(Z3df, aes(x=value, color = nu))+
+  geom_density(bounds = c(-1.45, 0.25))+
+  labs(
+    title = "Figur 9, Z3",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  theme_minimal()
+```
+
+```{r}
+Z2df <- data.frame(value = c(Z2s,Z2sh1), nu = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-1.8, 0.8, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(Z2df[Z2df$nu=="100",1])(x_values),
+        1 - ecdf(Z2df[Z2df$nu=="10",1])(x_values), 
+        1 - ecdf(Z2df[Z2df$nu=="5",1])(x_values),
+        1 - ecdf(Z2df[Z2df$nu=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 9, Z2",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(Z2df, aes(x=value, color = nu))+
+  geom_density(bounds = c(-1.8, 0.8))+
+  labs(
+    title = "Figur 9, Z2",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  theme_minimal()
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-9, 0, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(df[df$group=="100",1])(x_values),
+        1-ecdf(df[df$group=="10",1])(x_values), 
+        1-ecdf(df[df$group=="5",1])(x_values),
+        1-ecdf(df[df$group=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 9, numexceed",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(df, aes(x=value, color = group))+
+  geom_density()+
+  labs(
+    title = "Figur 9, numexceed",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  xlim(-9,0)+
+  theme_minimal()
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("100", "10", "5", "3"), each = M))
+data <- df[df$group=="100",1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z5 power
+```{r}
+parvec <- c("100", "10", "5", "3")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Number exceedences power
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+
+
+
+RESTEN TABLE 2
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu0 <- 10
+
+ES_int <- integrate(function(q) qstd(q, nu= nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qstd(alpha, nu = nu0)
+VaR1 <- -qstd(beta, nu = nu0)
+
+tsd <- sqrt(nu0/(nu0-2))
+for (i in 1:M){
+  Xdata <- rstd(T_, nu = nu0)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu0)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1)
+}
+```
+
+
+```{r}
+nu0 <- 10
+nu1s <- c(5,3)
+
+Z1sh1 <- numeric(M)
+Z2sh1 <- numeric(M)
+Z3sh1 <- numeric(M)
+Z4sh1 <- numeric(M)
+Z5sh1 <- matrix(NA,nrow = 2*M,2)
+numexh1 <- numeric(M)
+
+tsd <- sqrt(nu0/(nu0-2))
+ES_int <- integrate(function(q) qstd(q, nu = nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qstd(alpha, nu = nu0)
+VaR1 <- -qstd(beta, nu = nu0)
+
+set.seed(2025)
+for (j in 1:2){
+  nu1 <- nu1s[j]
+  
+  for (i in 1:M){
+    Xdata <- rstd(T_, nu = nu1)
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu0)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("10", "5", "3"), each = M))
+data <- df[df$group=="10",1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z5 power
+```{r}
+parvec <- c("10", "5", "3")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Number exceedences power
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+
+
+
+
+
+
+
+
+Figur 12/TABLE 3
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu0 <- 100
+
+ES_int <- integrate(function(q) qt(q, df= nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu0)
+VaR1 <- -qt(beta, df = nu0)
+
+for (i in 1:M){
+  Xdata <- rt(T_, nu0)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu0)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1)
+}
+```
+
+
+```{r}
+nu0 <- 100
+nu1s <- c(10,5,3)
+
+qth0 <- qt(0.025, nu0)
+qth1 <- qth0-qt(0.025, nu1s)
+
+Z1sh1 <- numeric(M)
+Z2sh1 <- numeric(M)
+Z3sh1 <- numeric(M)
+Z4sh1 <- numeric(M)
+Z5sh1 <- matrix(NA,nrow = 3*M,2)
+numexh1 <- numeric(M)
+
+ES_int <- integrate(function(q) qt(q, df = nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu0)
+VaR1 <- -qt(beta, df = nu0)
+
+set.seed(2025)
+for (j in 1:3){
+  nu1 <- nu1s[j]
+  
+  for (i in 1:M){
+    Xdata <- rt(T_, nu1)+qth1[j]
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu0)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+
+```{r}
+Z3df <- data.frame(value = c(Z3s,Z3sh1), nu = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-2.5, 0.25, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(Z3df[Z3df$nu=="100",1])(x_values),
+        1 - ecdf(Z3df[Z3df$nu=="10",1])(x_values), 
+        1 - ecdf(Z3df[Z3df$nu=="5",1])(x_values),
+        1 - ecdf(Z3df[Z3df$nu=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 12, Z3",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(Z3df, aes(x=value, color = nu))+
+  geom_density(bounds = c(-2.5, 0.25))+
+  labs(
+    title = "Figur 12, Z3",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  theme_minimal()
+```
+
+
+```{r}
+Z2df <- data.frame(value = c(Z2s,Z2sh1), nu = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-3, 0.8, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(Z2df[Z2df$nu=="100",1])(x_values),
+        1 - ecdf(Z2df[Z2df$nu=="10",1])(x_values), 
+        1 - ecdf(Z2df[Z2df$nu=="5",1])(x_values),
+        1 - ecdf(Z2df[Z2df$nu=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 12, Z2",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(Z2df, aes(x=value, color = nu))+
+  geom_density(bounds = c(-3, 0.8))+
+  labs(
+    title = "Figur 12, Z2",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  theme_minimal()
+```
+
+
+```{r}
+Z1df <- data.frame(value = c(Z1s,Z1sh1), nu = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-2.6, 0.2, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(Z1df[Z1df$nu=="100",1])(x_values),
+        1 - ecdf(Z1df[Z1df$nu=="10",1])(x_values), 
+        1 - ecdf(Z1df[Z1df$nu=="5",1])(x_values),
+        1 - ecdf(Z1df[Z1df$nu=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 12, Z1",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(Z1df, aes(x=value, color = nu))+
+  geom_density(bounds = c(-2.6, 0.2))+
+  labs(
+    title = "Figur 12, Z1",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  theme_minimal()
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("100", "10", "5", "3"), each = M))
+
+x_values <- seq(-10, 0, length.out = 1000)
+data <- data.frame(
+  x = rep(x_values, 4),
+  y = c(ecdf(df[df$group=="100",1])(x_values),
+        1-ecdf(df[df$group=="10",1])(x_values), 
+        1-ecdf(df[df$group=="5",1])(x_values),
+        1-ecdf(df[df$group=="3",1])(x_values)),
+        group = rep(c("100", "10", "5", "3"), each = length(x_values))
+)
+
+ggplot(data, aes(x = x, y = y, color = group)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Figur 12, numexceed",
+    x = "x",
+    y = "Cumulative Probability",
+    color = "Group"
+    ) +
+  theme_minimal()
+
+ggplot(df, aes(x=value, color = group))+
+  geom_density()+
+  labs(
+    title = "Figur 12, numexceed",
+    x = "x",
+    y = "Density",
+    color = "Group"
+    )+
+  xlim(-10,0)+
+  theme_minimal()
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("100", "10", "5", "3"), each = M))
+data <- df[df$group=="100",1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+
+Z1 power
+```{r}
+quant <- quantile(Z1df[Z1df$nu=="100",1][!is.nan(Z1df[Z1df$nu=="100",1])],probs = c(niveau1, niveau2))
+
+ecdf(Z1df[Z1df$nu=="10",1][!is.nan(Z1df[Z1df$nu=="10",1])])(quant[1])
+ecdf(Z1df[Z1df$nu=="3",1][!is.nan(Z1df[Z1df$nu=="3",1])])(quant[1])
+
+ecdf(Z1df[Z1df$nu=="10",1][!is.nan(Z1df[Z1df$nu=="10",1])])(quant[2])
+ecdf(Z1df[Z1df$nu=="3",1][!is.nan(Z1df[Z1df$nu=="3",1])])(quant[2])
+```
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z5 power
+```{r}
+parvec <- c("100", "10", "5", "3")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Number exceedences power
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("100", "10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+
+
+
+
+
+
+MERE TABLE 3
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu0 <- 10
+
+ES_int <- integrate(function(q) qt(q, df= nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu0)
+VaR1 <- -qt(beta, df = nu0)
+
+for (i in 1:M){
+  Xdata <- rt(T_, nu0)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu0)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1)
+}
+```
+
+
+```{r}
+nu0 <- 10
+nu1s <- c(5,3)
+
+qth0 <- qt(0.025, nu0)
+qth1 <- qth0-qt(0.025, nu1s)
+
+Z1sh1 <- numeric(M)
+Z2sh1 <- numeric(M)
+Z3sh1 <- numeric(M)
+Z4sh1 <- numeric(M)
+Z5sh1 <- matrix(NA,nrow = 2*M,2)
+numexh1 <- numeric(M)
+
+ES_int <- integrate(function(q) qt(q, df = nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qt(alpha, df = nu0)
+VaR1 <- -qt(beta, df = nu0)
+
+set.seed(2025)
+for (j in 1:2){
+  nu1 <- nu1s[j]
+  
+  for (i in 1:M){
+    Xdata <- rt(T_, nu1)+qth1[j]
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu0)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("10", "5", "3"), each = M))
+data <- df[df$group=="10",1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+
+Z1 power
+```{r}
+Z1df <- data.frame(value = c(Z1s,Z1sh1), nu = rep(c("10", "5", "3"), each = M))
+quant <- quantile(Z1df[Z1df$nu=="10",1][!is.nan(Z1df[Z1df$nu=="10",1])],probs = c(niveau1, niveau2))
+
+ecdf(Z1df[Z1df$nu=="5",1][!is.nan(Z1df[Z1df$nu=="10",1])])(quant[1])
+ecdf(Z1df[Z1df$nu=="3",1][!is.nan(Z1df[Z1df$nu=="3",1])])(quant[1])
+
+ecdf(Z1df[Z1df$nu=="5",1][!is.nan(Z1df[Z1df$nu=="10",1])])(quant[2])
+ecdf(Z1df[Z1df$nu=="3",1][!is.nan(Z1df[Z1df$nu=="3",1])])(quant[2])
+```
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z5 power
+```{r}
+parvec <- c("10", "5", "3")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Number of Exceedances
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+
+
+
+
+MERE TABLE 3 MED NORMALISERET T FORDELING PT 1
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu0 <- 100
+
+ES_int <- integrate(function(q) qstd(q, nu= nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qstd(alpha, nu = nu0)
+VaR1 <- -qstd(beta, nu = nu0)
+
+for (i in 1:M){
+  Xdata <- rstd(T_, nu=nu0)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu0)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1)
+}
+```
+
+
+```{r}
+nu0 <- 100
+nu1s <- c(10,3)
+
+qth0 <- qstd(0.025, nu=nu0)
+qth1 <- qth0-qstd(0.025, nu=nu1s)
+
+Z1sh1 <- numeric(M)
+Z2sh1 <- numeric(M)
+Z3sh1 <- numeric(M)
+Z4sh1 <- numeric(M)
+Z5sh1 <- matrix(NA,nrow = 2*M,2)
+numexh1 <- numeric(M)
+
+ES_int <- integrate(function(q) qstd(q, nu = nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qstd(alpha, nu = nu0)
+VaR1 <- -qstd(beta, nu = nu0)
+
+set.seed(2025)
+for (j in 1:2){
+  nu1 <- nu1s[j]
+  
+  for (i in 1:M){
+    Xdata <- rstd(T_, nu=nu1)+qth1[j]
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu0)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("100", "10", "3"), each = M))
+data <- df[df$group=="100",1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+Z1 power
+```{r}
+Z1df <- data.frame(value = c(Z1s,Z1sh1), nu = rep(c("100", "10", "3"), each = M))
+quant <- quantile(Z1df[Z1df$nu=="100",1][!is.nan(Z1df[Z1df$nu=="100",1])],probs = c(niveau1, niveau2))
+
+ecdf(Z1df[Z1df$nu=="10",1][!is.nan(Z1df[Z1df$nu=="10",1])])(quant[1])
+ecdf(Z1df[Z1df$nu=="3",1][!is.nan(Z1df[Z1df$nu=="3",1])])(quant[1])
+
+ecdf(Z1df[Z1df$nu=="10",1][!is.nan(Z1df[Z1df$nu=="10",1])])(quant[2])
+ecdf(Z1df[Z1df$nu=="3",1][!is.nan(Z1df[Z1df$nu=="3",1])])(quant[2])
+```
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("100", "10", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("100", "10", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("100", "10", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z5 power
+```{r}
+parvec <- c("100", "10", "3")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Number of Exceedances
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("100", "10", "3"), each = M)))
+quant <- quantile(df[df$grp=="100",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="10",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="10",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+
+
+
+
+MERE TABLE 3 MED NORMALISERET T FORDELING PT 2
+```{r}
+set.seed(2025)
+M <- 10000
+Z1s <- numeric(M)
+Z2s <- numeric(M)
+Z3s <- numeric(M)
+Z4s <- numeric(M)
+Z5s <- matrix(NA,nrow = M,2)
+numex <- numeric(M)
+nu0 <- 10
+
+ES_int <- integrate(function(q) qstd(q, nu= nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qstd(alpha, nu = nu0)
+VaR1 <- -qstd(beta, nu = nu0)
+
+for (i in 1:M){
+  Xdata <- rstd(T_, nu=nu0)
+  
+  Z1s[i] <- Z1f(Xdata,VaR,ES)
+  Z2s[i] <- Z2f(Xdata,VaR,ES)
+  Z3s[i] <- Z3f(Xdata,nu0)
+  Z4s[i] <- Z4f(Xdata,VaR,ES)
+  Z5val <- Z5f(Xdata,VaR,ES)
+  Z5s[i,1] <- Z5val[1]
+  Z5s[i,2] <- Z5val[2]
+  numex[i] <- -sum(Xdata < -VaR1)
+}
+```
+
+
+```{r}
+nu0 <- 10
+nu1s <- c(5,3)
+
+qth0 <- qstd(0.025, nu=nu0)
+qth1 <- qth0-qstd(0.025, nu=nu1s)
+
+Z1sh1 <- numeric(M)
+Z2sh1 <- numeric(M)
+Z3sh1 <- numeric(M)
+Z4sh1 <- numeric(M)
+Z5sh1 <- matrix(NA,nrow = 2*M,2)
+numexh1 <- numeric(M)
+
+ES_int <- integrate(function(q) qstd(q, nu = nu0), lower = 0, upper = alpha)$value
+ES <- -1/alpha*ES_int
+VaR <- -qstd(alpha, nu = nu0)
+VaR1 <- -qstd(beta, nu = nu0)
+
+set.seed(2025)
+for (j in 1:2){
+  nu1 <- nu1s[j]
+  
+  for (i in 1:M){
+    Xdata <- rstd(T_, nu=nu1)+qth1[j]
+    
+    Z1sh1[i+(j-1)*M] <- Z1f(Xdata,VaR,ES)
+    Z2sh1[i+(j-1)*M] <- Z2f(Xdata,VaR,ES)
+    Z3sh1[i+(j-1)*M] <- Z3f(Xdata,nu0)
+    Z4sh1[i+(j-1)*M] <- Z4f(Xdata,VaR,ES)
+    Z5val <- Z5f(Xdata,VaR,ES)
+    Z5sh1[i+(j-1)*M,1] <- Z5val[1]
+    Z5sh1[i+(j-1)*M,2] <- Z5val[2]
+    numexh1[i+(j-1)*M] <- -sum(Xdata < -VaR1)
+  }
+}
+```
+
+
+```{r}
+df <- data.frame(value = c(numex,numexh1), group = rep(c("10", "5", "3"), each = M))
+data <- df[df$group=="10",1]
+sorted_unique <- sort(unique(data))
+
+# Trin 2: Beregn den kumulative frekvens for hver værdi
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+# Trin 3: Find den mindste værdi hvor den kumulative sandsynlighed ≥ 5%
+niveau1 <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau2 <- cum_probs[which.min(abs(cum_probs-0.1))]
+niveau1
+niveau2
+```
+
+Z1 power
+```{r}
+Z1df <- data.frame(value = c(Z1s,Z1sh1), nu = rep(c("10", "5", "3"), each = M))
+quant <- quantile(Z1df[Z1df$nu=="10",1][!is.nan(Z1df[Z1df$nu=="10",1])],probs = c(niveau1, niveau2))
+
+ecdf(Z1df[Z1df$nu=="5",1][!is.nan(Z1df[Z1df$nu=="5",1])])(quant[1])
+ecdf(Z1df[Z1df$nu=="3",1][!is.nan(Z1df[Z1df$nu=="3",1])])(quant[1])
+
+ecdf(Z1df[Z1df$nu=="5",1][!is.nan(Z1df[Z1df$nu=="5",1])])(quant[2])
+ecdf(Z1df[Z1df$nu=="3",1][!is.nan(Z1df[Z1df$nu=="3",1])])(quant[2])
+```
+
+Z2 power
+```{r}
+df <- na.omit(data.frame(value = c(Z2s,Z2sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z3 power
+```{r}
+df <- na.omit(data.frame(value = c(Z3s,Z3sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z4 power
+```{r}
+df <- na.omit(data.frame(value = c(Z4s,Z4sh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+Z5 power
+```{r}
+parvec <- c("10", "5", "3")
+L <- length(parvec)
+df1 <- na.omit(data.frame(value = c(Z5s[,1],Z5sh1[,1]), grp = rep(parvec, each = M)))
+df2 <- na.omit(data.frame(value = c(Z5s[,2],Z5sh1[,2]), grp = rep(parvec, each = M)))
+for (i in 2:L){
+  simdf <- df1[df1$grp == parvec[i],]
+  simdfh0 <- df1[df1$grp == parvec[1],]
+  pvec1 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  simdf <- df2[df2$grp == parvec[i],]
+  simdfh0 <- df2[df2$grp == parvec[1],]
+  pvec2 <- 1-ecdf(simdfh0$value)(simdf$value)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  print(parvec[i])
+  print(mean(pvals <= niveau1))
+  print(mean(pvals <= niveau2))
+}
+```
+
+Number of Exceedances
+```{r}
+df <- na.omit(data.frame(value = c(numex,numexh1), grp = rep(c("10", "5", "3"), each = M)))
+quant <- quantile(df[df$grp=="10",1], probs = c(niveau1, niveau2))
+
+ecdf(df[df$grp=="5",1])(quant[1])
+ecdf(df[df$grp=="3",1])(quant[1])
+
+ecdf(df[df$grp=="5",1])(quant[2])
+ecdf(df[df$grp=="3",1])(quant[2])
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,395 @@
+Beregninger med rigtig data
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(rugarch)
+library(fGarch)
+library(QRM)
+library(ggbreak)
+library(quantmod)
+library(tidyverse)
+```
+
+data
+```{r, message=FALSE, warning=FALSE}
+tickers <- c("^GSPC")
+getSymbols(tickers, src = "yahoo", from = "2001-02-23", to = "2025-01-01")
+clean_tickers <- gsub("\\^","",tickers)
+```
+
+```{r}
+adj_close_list <- lapply(clean_tickers, function(ticker) {
+  diff(log(Ad(get(ticker))))
+})
+
+adj_close_list <- Map(function(x, name) {
+  colnames(x) <- name
+  return(x)
+}, adj_close_list, tickers)
+
+adj_close_xts <- do.call(merge, adj_close_list)
+
+datf <- data.frame(coredata(adj_close_xts))
+head(datf)
+```
+
+```{r}
+for (i in 1:1){
+  X <- na.omit(datf[,i])
+  print(length(X))
+}
+```
+
+
+NOLDE OG ZIEGEL REPLIKATION MED S&P500
+
+CC-TEST
+```{r}
+Z5f <- function(X,VaR,ES){
+  r <- X
+  q <- -VaR
+  e <- -ES
+  n <- length(r)
+  
+  V <- cbind(alpha - (r <= q),
+             e - q + (r <= q) * (q - r) / alpha)
+  
+  H1 <- aperm(replicate(n, diag(2)))
+  hV1 <- apply(H1, 2, function(x) rowSums(x * V))
+  omega1 <- crossprod(hV1) / n
+  
+  t1 <- sqrt(n) * diag(omega1)^(-1/2) * colMeans(hV1)
+}
+```
+
+
+```{r}
+T_ <- 6000
+N <- 1000 ##In sample
+X <- tail(na.omit(datf[,1]),T_)
+```
+
+
+```{r}
+spec <- ugarchspec(
+    variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+    mean.model = list(armaOrder = c(0, 0), include.mean = F),
+    distribution.model = "std"
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+alpha <- 0.025
+beta <- 0.01
+Z51_mat <- matrix(NA,1,3)
+Z52_mat <- matrix(NA,1,3)
+
+#Til Weighted HS
+lambda <- 0.995
+prob_weights <- lambda^(N-1:N)*(1-lambda)/(1-lambda^N)
+prob_eq <- rep(1/N,N)
+
+##HS
+VaRHS <- numeric(T_-N)
+ESHS <- numeric(T_-N)
+VaR1HS <- numeric(T_-N)
+##PWHS
+VaRPWHS <- numeric(T_-N)
+ESPWHS <- numeric(T_-N)
+VaR1PWHS <- numeric(T_-N)
+#FP
+VaRFP <- numeric(T_-N)
+ESFP <- numeric(T_-N)
+VaR1FP <- numeric(T_-N)
+
+for (j in (N+1):T_){
+  Rolwin <- X[(j-N):(j-1)]
+  
+  #Sorted order
+  sorted_order <- order(Rolwin)
+  sorted_rol <- Rolwin[sorted_order]
+  sorted_probs <- prob_weights[sorted_order]
+  sorted_eq_probs <- prob_eq[sorted_order]
+  
+  #HS
+  ptotal <- 0
+  numb <- 1
+  while (ptotal < alpha) {
+    ptotal <- sum(sorted_eq_probs[1:numb])
+    #VaR
+    if (length(sorted_eq_probs[1:numb])==1){
+      VaRval <- -sorted_rol[numb]
+    } else {
+      f0 <- -sorted_rol[numb-1]
+      ssh0 <- sum(sorted_eq_probs[1:(numb-1)])
+      f1 <- -sorted_rol[numb]
+      ssh1 <- sum(sorted_eq_probs[1:numb])
+      VaRval <- f0+(f1-f0)/(ssh1-ssh0)*(alpha-ssh0)
+    }
+    #ES
+    if (ptotal >= alpha){
+      if (length(sorted_eq_probs[1:numb])==1){
+        ESval <- -1/alpha*(alpha*sorted_rol[1:numb])
+      } else {
+        probsadj <- c(sorted_eq_probs[1:(numb-1)],alpha-sum(sorted_eq_probs[1:(numb-1)]))
+        ESval <- -1/alpha*sum(probsadj*sorted_rol[1:numb])
+      }
+    }
+    numb <- numb+1
+  }
+  VaRHS[j-N] <- VaRval
+  ESHS[j-N] <- ESval
+  
+  #PWHS
+  ptotal <- 0
+  numb <- 1
+  while (ptotal < alpha) {
+    ptotal <- sum(sorted_probs[1:numb])
+    #VaR
+    if (length(sorted_probs[1:numb])==1){
+      VaRval <- -sorted_rol[numb]
+    } else {
+      f0 <- -sorted_rol[numb-1]
+      ssh0 <- sum(sorted_probs[1:(numb-1)])
+      f1 <- -sorted_rol[numb]
+      ssh1 <- sum(sorted_probs[1:numb])
+      VaRval <- f0+(f1-f0)/(ssh1-ssh0)*(alpha-ssh0)
+    }
+    #ES
+    if (ptotal >= alpha){
+      if (length(sorted_probs[1:numb])==1){
+        ESval <- -1/alpha*(alpha*sorted_rol[1:numb])
+      } else {
+        probsadj <- c(sorted_probs[1:(numb-1)],alpha-sum(sorted_probs[1:(numb-1)]))
+        ESval <- -1/alpha*sum(probsadj*sorted_rol[1:numb])
+      }
+    }
+    numb <- numb+1
+  }
+  VaRPWHS[j-N] <- VaRval
+  ESPWHS[j-N] <- ESval
+  
+  #FP
+  fit <- ugarchfit(spec,Rolwin)
+  numod <- coef(fit)[4]
+  EZI <- integrate(function(q) qstd(q, nu=numod),lower = 0,upper = alpha)$value
+  
+  frcst <- ugarchforecast(fit, n.ahead = 1)
+  frcstsigma <- as.numeric(frcst@forecast$sigmaFor)
+  VaRval <- frcstsigma*(-qstd(alpha, nu=numod))
+  ESval <- frcstsigma*(-1/alpha)*EZI
+  VaRFP[j-N] <- VaRval
+  ESFP[j-N] <- ESval
+}
+
+Z5val <- Z5f(tail(X,T_-N),VaRHS,ESHS)
+Z51_mat[1,1] <- Z5val[1]
+Z52_mat[1,1] <- Z5val[2]
+
+Z5val <- Z5f(tail(X,T_-N),VaRPWHS,ESPWHS)
+Z51_mat[1,2] <- Z5val[1]
+Z52_mat[1,2] <- Z5val[2]
+
+Z5val <- Z5f(tail(X,T_-N),VaRFP,ESFP)
+Z51_mat[1,3] <- Z5val[1]
+Z52_mat[1,3] <- Z5val[2]
+```
+
+
+GEM DATA
+```{r}
+save(Z51_mat,Z52_mat, file = "BeregningerMedRigtigData.RData")
+```
+
+```{r}
+load("BeregningerMedRigtigData.RData")
+```
+
+
+HS p-value
+```{r}
+pvec1 <- 1-pnorm(Z51_mat[1,1])
+
+pvec2 <- 1-pnorm(Z52_mat[1,1])
+pval <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1,pvec2)) / (1:2)), 1)
+pval
+```
+
+PWHS p-value
+```{r}
+pvec1 <- 1-pnorm(Z51_mat[1,2])
+
+pvec2 <- 1-pnorm(Z52_mat[1,2])
+pval <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1,pvec2)) / (1:2)), 1)
+pval
+```
+
+FP p-value
+```{r}
+pvec1 <- 1-pnorm(Z51_mat[1,3])
+
+pvec2 <- 1-pnorm(Z52_mat[1,3])
+pval <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1,pvec2)) / (1:2)), 1)
+pval
+```
+
+
+SE OM NZ FAKTISK ER NORMALFORDELT
+```{r}
+simf <- function(mu_,phi,omega,alpha,beta,nu){
+  zt <- rstd(T_+burn, nu = nu)
+  X <- numeric(T_+burn)
+  sigma <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  eps[1] <- sigma[1]*zt[1]
+  mu[1] <- 0+mu_
+  X[1] <- mu[1]+eps[1]
+  
+  for (i in 2:(T_+burn)){
+    sigma[i] <- sqrt(omega+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+    eps[i] <- sigma[i]*zt[i]
+    mu[i] <- phi*X[i-1]+mu_
+    X[i] <- mu[i]+eps[i]
+  }
+  
+  return(list(X = tail(X,T_), mu = tail(mu,T_), sigma = tail(sigma,T_), Xfull = X))
+}
+```
+
+
+```{r}
+N <- 0 ##In sample
+T_ <- 250 ##Fuld datasæt
+burn <- 250 ##Burn in period
+beta <- 0.01
+alpha <- 0.025
+M <- 10000
+```
+
+```{r}
+mu_ <- 0
+ar <- 0
+omega <- 0.01
+alpha1 <- 0.1
+beta1 <- 0.85
+nu <- 10
+```
+
+```{r}
+Z51_mat <- numeric(M)
+Z52_mat <- numeric(M)
+
+set.seed(2025)
+for (i in 1:M){
+  sim <- simf(mu_,ar,omega,alpha1,beta1,nu)
+  X <- sim$X
+  mu <- sim$mu
+  sigma <- sim$sigma
+  
+  EZI <- integrate(function(q) qstd(q, nu=nu),lower = 0,upper = alpha)$value
+  
+  VaR <- -mu+sigma*(-qstd(alpha, nu=nu))
+  ES <- -mu+sigma*(-1/alpha)*EZI
+  VaR1 <- -mu+sigma*(-qstd(beta, nu=nu))
+  
+  Z5val <- Z5f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z51_mat[i] <- Z5val[1]
+  Z52_mat[i] <- Z5val[2]
+}
+```
+
+```{r}
+data <- data.frame(vals = c(Z51_mat))
+ggplot(data, aes(x = vals)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  labs(title = "Z5_1 Histogram") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z52_mat))
+ggplot(data, aes(x = vals)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  labs(title = "Z5_2 Histogram") +
+  theme_minimal()
+```
+
+```{r}
+qqnorm(Z51_mat)
+qqline(Z51_mat)
+qqnorm(Z52_mat)
+qqline(Z52_mat)
+```
+
+
+
+```{r}
+N <- 0 ##In sample
+T_ <- 5000 ##Fuld datasæt
+burn <- 250 ##Burn in period
+beta <- 0.01
+alpha <- 0.025
+M <- 10000
+```
+
+```{r}
+mu_ <- 0
+ar <- 0
+omega <- 0.01
+alpha1 <- 0.1
+beta1 <- 0.85
+nu <- 10
+```
+
+```{r}
+Z51_mat <- numeric(M)
+Z52_mat <- numeric(M)
+
+set.seed(2025)
+for (i in 1:M){
+  sim <- simf(mu_,ar,omega,alpha1,beta1,nu)
+  X <- sim$X
+  mu <- sim$mu
+  sigma <- sim$sigma
+  
+  EZI <- integrate(function(q) qstd(q, nu=nu),lower = 0,upper = alpha)$value
+  
+  VaR <- -mu+sigma*(-qstd(alpha, nu=nu))
+  ES <- -mu+sigma*(-1/alpha)*EZI
+  VaR1 <- -mu+sigma*(-qstd(beta, nu=nu))
+  
+  Z5val <- Z5f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z51_mat[i] <- Z5val[1]
+  Z52_mat[i] <- Z5val[2]
+}
+```
+
+```{r}
+data <- data.frame(vals = c(Z51_mat))
+ggplot(data, aes(x = vals)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  labs(title = "Z5_1 Histogram") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z52_mat))
+ggplot(data, aes(x = vals)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  labs(title = "Z5_2 Histogram") +
+  theme_minimal()
+```
+
+```{r}
+qqnorm(Z51_mat)
+qqline(Z51_mat)
+qqnorm(Z52_mat)
+qqline(Z51_mat)
+```
+
+
+
+
+
+
+

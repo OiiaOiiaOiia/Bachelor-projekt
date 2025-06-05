@@ -1,0 +1,982 @@
+Udvidet Acerbi og Szekely
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(rugarch)
+library(fGarch)
+library(quantmod)
+library(tidyverse)
+```
+
+
+```{r}
+simf <- function(mu_,phi,omega,alpha,beta,nu){
+  zt <- rstd(T_+burn, nu = nu)
+  X <- numeric(T_+burn)
+  sigma <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  eps[1] <- sigma[1]*zt[1]
+  mu[1] <- 0+mu_
+  X[1] <- mu[1]+eps[1]
+  
+  for (i in 2:(T_+burn)){
+    sigma[i] <- sqrt(omega+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+    eps[i] <- sigma[i]*zt[i]
+    mu[i] <- phi*X[i-1]+mu_
+    X[i] <- mu[i]+eps[i]
+  }
+  
+  return(list(X = tail(X,T_), mu = tail(mu,T_), sigma = tail(sigma,T_), Xfull = X))
+}
+```
+
+
+```{r}
+estim <- function(mu_,phi,omega,alpha,beta,nu,Xfull){
+  sigma <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  
+  mu[1] <- 0+mu_
+  eps[1] <- Xfull[1]-mu[1]
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  
+  for (i in 2:(T_+burn)){
+    mu[i] <- phi*Xfull[i-1]+mu_
+    eps[i] <- Xfull[i]-mu[i]
+    sigma[i] <- sqrt(omega+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+  }
+  
+  return(list(mu = tail(mu,T_), sigma = tail(sigma,T_)))
+}
+```
+
+
+TEST
+```{r}
+Z2f <- function(X,VaR,ES){
+  N <- length(X)
+  sum(X*(X+VaR<0)/(N*alpha*ES))+1
+}
+
+Z3f <- function(X,mu,sigma,nu){
+  N <- length(X)
+  Ta <- floor(T_*alpha)
+  
+  Ut <- pstd(X, mu, sigma, nu)
+  quant <- qstd(Ut, nu = nu)
+  
+  EST <- numeric(N)
+  for (i in 1:N){
+    Y <- mu[i]+sigma[i]*quant
+    EST[i] <- -1/Ta*sum(sort(Y)[1:Ta])
+  }
+  
+  betaint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)}, lower = 0, upper = 1)$value
+  betaqint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)*qstd(p, nu=nu)}, 
+                        lower = 0, upper = 1)$value
+  
+  EV <- -T_/Ta*(betaint*mu+betaqint*sigma)
+  
+  -mean(EST/EV)+1
+}
+
+Z4f <- function(X,VaR,ES){
+  mean((X+ES)[X+VaR<0])
+}
+
+Z5f <- function(X,VaR,ES){
+  r <- X
+  q <- -VaR
+  e <- -ES
+  n <- length(r)
+  
+  V <- cbind(alpha - (r <= q),
+             e - q + (r <= q) * (q - r) / alpha)
+  
+  H1 <- aperm(replicate(n, diag(2)))
+  hV1 <- apply(H1, 2, function(x) rowSums(x * V))
+  omega1 <- crossprod(hV1) / n
+  
+  t1 <- sqrt(n) * diag(omega1)^(-1/2) * colMeans(hV1)
+}
+```
+
+
+Sensitivitetsanalyse!!!!!
+```{r, warning=FALSE, message=FALSE}
+T_ <- 250
+burn <- 250
+beta <- 0.01
+alpha <- 0.025
+M <- 10000
+```
+
+```{r}
+#H0 parametre, vores model
+mu0 <- 0
+ar0 <- 0
+omega0 <- 0.01
+alpha0 <- 0.1
+beta0 <- 0.85
+nu0 <- 10
+```
+
+
+Sample under H0
+```{r, warning=FALSE, message=FALSE}
+Z2sh0 <- numeric(M)
+Z3sh0 <- numeric(M)
+Z4sh0 <- numeric(M)
+Z5sh01 <- numeric(M)
+Z5sh02 <- numeric(M)
+numexh0 <- numeric(M)
+
+set.seed(2025)
+for (i in 1:M){
+  sim <- simf(mu0,ar0,omega0,alpha0,beta0,nu0)
+  X <- sim$X
+  mu <- sim$mu
+  sigma <- sim$sigma
+  
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+  ES <- -mu+sigma*(-1/alpha)*EZI
+  VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+  
+  Z2sh0[i] <- Z2f(X,VaR,ES)
+  Z3sh0[i] <- Z3f(X,mu,sigma,nu0)
+  Z4sh0[i] <- Z4f(X,VaR,ES)
+  Z5val <- Z5f(X,VaR,ES)
+  Z5sh01[i] <- Z5val[1]
+  Z5sh02[i] <- Z5val[2]
+  numexh0[i] <- -sum(X < -VaR1)
+}
+```
+
+Signifikansniveau tættest på 5% for number of exceedences
+```{r}
+data <- numexh0
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau
+```
+
+
+Ændr frihedsgrader (df-er)
+```{r}
+##Sand model
+parvec <- c(3,4,5,6,7,8,9,11,12,100)
+L <- length(parvec)
+```
+
+Sample under H_1
+```{r, warning=FALSE, message=FALSE}
+Z2s <- numeric(L*M)
+Z3s <- numeric(L*M)
+Z4s <- numeric(L*M)
+Z5s1 <- numeric(L*M)
+Z5s2 <- numeric(L*M)
+numex <- numeric(L*M)
+
+set.seed(2025)
+for (j in 1:L){
+  nuT <- parvec[j]
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  for (i in 1:M){
+    sim <- simf(mu0,ar0,omega0,alpha0,beta0,nuT)
+    X <- sim$X
+    Xfull <- sim$Xfull
+    mu <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$mu
+    sigma <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$sigma
+    
+    VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+    ES <- -mu+sigma*(-1/alpha)*EZI
+    VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+    
+    Z2s[i+(j-1)*M] <- Z2f(X,VaR,ES)
+    Z3s[i+(j-1)*M] <- Z3f(X,mu,sigma,nu0)
+    Z4s[i+(j-1)*M] <- Z4f(X,VaR,ES)
+    Z5val <- Z5f(X,VaR,ES)
+    Z5s1[i+(j-1)*M] <- Z5val[1]
+    Z5s2[i+(j-1)*M] <- Z5val[2]
+    numex[i+(j-1)*M] <- -sum(X < -VaR1)
+  }
+}
+```
+
+
+Power
+```{r}
+parvec <- c(3,4,5,6,7,8,9,11,12,100)
+L <- length(parvec)
+
+dfZ2 <- data.frame(val = Z2s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z2sh0)
+
+dfZ3 <- data.frame(val = Z3s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z3sh0)
+
+dfZ4 <- na.omit(data.frame(val = Z4s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z4sh0))
+
+dfZ51 <- data.frame(val = Z5s1, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z5sh01)
+dfZ52 <- data.frame(val = Z5s2, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z5sh02)
+
+dfnum <- data.frame(val = numex, 
+                    grp = rep(parvec, each = M),
+                    valh0 = numexh0)
+```
+
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ2[dfZ2$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),df=c(parvec, 10))
+dfZ2_1 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ3[dfZ3$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),df=c(parvec, 10))
+dfZ3_1 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ4[dfZ4$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),df=c(parvec, 10))
+dfZ4_1 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ51[dfZ51$grp == parvec[i],]
+  pvec1 <- 1-ecdf(simdf$valh0)(simdf$val)
+  
+  simdf <- dfZ52[dfZ52$grp == parvec[i],]
+  pvec2 <- 1-ecdf(simdf$valh0)(simdf$val)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  pval[i] <- mean(pvals <= niveau)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),df=c(parvec, 10))
+dfZ5_1 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfnum[dfnum$grp == parvec[i],]
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),df=c(parvec, 10))
+dfnum_1 <- pvaldf
+pvaldf
+```
+
+
+Ubetinget varians ændring (omega-er)
+```{r}
+##Sand model
+parvec <- c(0.05, 0.1, 0.15, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6)*(1-alpha0-beta0)
+L <- length(parvec)
+```
+
+Sample under H_1
+```{r, warning=FALSE, message=FALSE}
+Z2s <- numeric(L*M)
+Z3s <- numeric(L*M)
+Z4s <- numeric(L*M)
+Z5s1 <- numeric(L*M)
+Z5s2 <- numeric(L*M)
+numex <- numeric(L*M)
+
+set.seed(2025)
+for (j in 1:L){
+  omegaT <- parvec[j]
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  for (i in 1:M){
+    sim <- simf(mu0,ar0,omegaT,alpha0,beta0,nu0)
+    X <- sim$X
+    Xfull <- sim$Xfull
+    mu <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$mu
+    sigma <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$sigma
+    
+    VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+    ES <- -mu+sigma*(-1/alpha)*EZI
+    VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+    
+    Z2s[i+(j-1)*M] <- Z2f(X,VaR,ES)
+    Z3s[i+(j-1)*M] <- Z3f(X,mu,sigma,nu0)
+    Z4s[i+(j-1)*M] <- Z4f(X,VaR,ES)
+    Z5val <- Z5f(X,VaR,ES)
+    Z5s1[i+(j-1)*M] <- Z5val[1]
+    Z5s2[i+(j-1)*M] <- Z5val[2]
+    numex[i+(j-1)*M] <- -sum(X < -VaR1)
+  }
+}
+```
+
+
+Power
+```{r}
+parvec <- c(0.05, 0.1, 0.15, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6)
+L <- length(parvec)
+
+dfZ2 <- data.frame(val = Z2s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z2sh0)
+
+dfZ3 <- data.frame(val = Z3s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z3sh0)
+
+dfZ4 <- na.omit(data.frame(val = Z4s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z4sh0))
+
+dfZ51 <- data.frame(val = Z5s1, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z5sh01)
+dfZ52 <- data.frame(val = Z5s2, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z5sh02)
+
+dfnum <- data.frame(val = numex, 
+                    grp = rep(parvec, each = M),
+                    valh0 = numexh0)
+```
+
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ2[dfZ2$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval,niveau),unconditional_var=c(parvec, 0.2))
+dfZ2_2 <- pvaldf
+pvaldf
+```
+
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ3[dfZ3$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval,niveau),unconditional_var=c(parvec, 0.2))
+dfZ3_2 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ4[dfZ4$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),unconditional_var=c(parvec, 0.2))
+dfZ4_2 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ51[dfZ51$grp == parvec[i],]
+  pvec1 <- 1-ecdf(simdf$valh0)(simdf$val)
+  
+  simdf <- dfZ52[dfZ52$grp == parvec[i],]
+  pvec2 <- 1-ecdf(simdf$valh0)(simdf$val)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  pval[i] <- mean(pvals <= niveau)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),unconditional_var=c(parvec, 0.2))
+dfZ5_2 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfnum[dfnum$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval,niveau),unconditional_var=c(parvec, 0.2))
+dfnum_2 <- pvaldf
+pvaldf
+```
+
+
+Persistens ændring
+Sample under H_1 (vektor af d-er)
+```{r}
+##Model, H_0
+parvec <- c(0.91, 0.92, 0.93, 0.94, 0.96, 0.97, 0.98, 0.99)/(alpha0+beta0)
+L <- length(parvec)
+```
+
+```{r, warning=FALSE, message=FALSE}
+Z2s <- numeric(L*M)
+Z3s <- numeric(L*M)
+Z4s <- numeric(L*M)
+Z5s1 <- numeric(L*M)
+Z5s2 <- numeric(L*M)
+numex <- numeric(L*M)
+
+set.seed(2025)
+for (j in 1:L){
+  alphaT <- parvec[j]*alpha0
+  betaT <- parvec[j]*beta0
+  omegaT <- omega0/(1-alpha0-beta0)*(1-alphaT-betaT)
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  for (i in 1:M){
+    sim <- simf(mu0,ar0,omegaT,alphaT,betaT,nu0)
+    X <- sim$X
+    Xfull <- sim$Xfull
+    mu <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$mu
+    sigma <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$sigma
+    
+    VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+    ES <- -mu+sigma*(-1/alpha)*EZI
+    VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+    
+    Z2s[i+(j-1)*M] <- Z2f(X,VaR,ES)
+    Z3s[i+(j-1)*M] <- Z3f(X,mu,sigma,nu0)
+    Z4s[i+(j-1)*M] <- Z4f(X,VaR,ES)
+    Z5val <- Z5f(X,VaR,ES)
+    Z5s1[i+(j-1)*M] <- Z5val[1]
+    Z5s2[i+(j-1)*M] <- Z5val[2]
+    numex[i+(j-1)*M] <- -sum(X < -VaR1)
+  }
+}
+```
+
+
+Power
+```{r}
+parvec <- c(0.91, 0.92, 0.93, 0.94, 0.96, 0.97, 0.98, 0.99)
+L <- length(parvec)
+
+dfZ2 <- data.frame(val = Z2s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z2sh0)
+
+dfZ3 <- data.frame(val = Z3s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z3sh0)
+
+dfZ4 <- na.omit(data.frame(val = Z4s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z4sh0))
+
+dfZ51 <- data.frame(val = Z5s1, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z5sh01)
+dfZ52 <- data.frame(val = Z5s2, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z5sh02)
+
+dfnum <- data.frame(val = numex, 
+                    grp = rep(parvec, each = M),
+                    valh0 = numexh0)
+```
+
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ2[dfZ2$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval,niveau),persistence=c(parvec, 0.95))
+dfZ2_3 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ3[dfZ3$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval,niveau),persistence=c(parvec, 0.95))
+dfZ3_3 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ4[dfZ4$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),persistence=c(parvec, 0.95))
+dfZ4_3 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ51[dfZ51$grp == parvec[i],]
+  pvec1 <- 1-ecdf(simdf$valh0)(simdf$val)
+  
+  simdf <- dfZ52[dfZ52$grp == parvec[i],]
+  pvec2 <- 1-ecdf(simdf$valh0)(simdf$val)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  pval[i] <- mean(pvals <= niveau)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),persistence=c(parvec, 0.95))
+dfZ5_3 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfnum[dfnum$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval,niveau),persistence=c(parvec, 0.95))
+dfnum_3 <- pvaldf
+pvaldf
+```
+
+
+Arch-ændring
+Sample under H_1 (vektor af alpha-er)
+```{r}
+##Model, H_0
+parvec <- c(0.01, 0.04, 0.06, 0.08, 0.12, 0.14, 0.16, 0.2)
+L <- length(parvec)
+```
+
+```{r, warning=FALSE, message=FALSE}
+Z2s <- numeric(L*M)
+Z3s <- numeric(L*M)
+Z4s <- numeric(L*M)
+Z5s1 <- numeric(L*M)
+Z5s2 <- numeric(L*M)
+numex <- numeric(L*M)
+
+set.seed(2025)
+for (j in 1:L){
+  alphaT <- parvec[j]
+  betaT <- beta0+alpha0-alphaT
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  for (i in 1:M){
+    sim <- simf(mu0,ar0,omega0,alphaT,betaT,nu0)
+    X <- sim$X
+    Xfull <- sim$Xfull
+    mu <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$mu
+    sigma <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$sigma
+    
+    VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+    ES <- -mu+sigma*(-1/alpha)*EZI
+    VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+    
+    Z2s[i+(j-1)*M] <- Z2f(X,VaR,ES)
+    Z3s[i+(j-1)*M] <- Z3f(X,mu,sigma,nu0)
+    Z4s[i+(j-1)*M] <- Z4f(X,VaR,ES)
+    Z5val <- Z5f(X,VaR,ES)
+    Z5s1[i+(j-1)*M] <- Z5val[1]
+    Z5s2[i+(j-1)*M] <- Z5val[2]
+    numex[i+(j-1)*M] <- -sum(X < -VaR1)
+  }
+}
+```
+
+
+Power
+```{r}
+parvec <- c(0.01, 0.04, 0.06, 0.08, 0.12, 0.14, 0.16, 0.2)
+L <- length(parvec)
+
+dfZ2 <- data.frame(val = Z2s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z2sh0)
+
+dfZ3 <- data.frame(val = Z3s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z3sh0)
+
+dfZ4 <- na.omit(data.frame(val = Z4s, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z4sh0))
+
+dfZ51 <- data.frame(val = Z5s1, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z5sh01)
+dfZ52 <- data.frame(val = Z5s2, 
+                   grp = rep(parvec, each = M),
+                   valh0 = Z5sh02)
+
+dfnum <- data.frame(val = numex, 
+                    grp = rep(parvec, each = M),
+                    valh0 = numexh0)
+```
+
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ2[dfZ2$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval,niveau),ARCH=c(parvec, 0.1))
+dfZ2_4 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ3[dfZ3$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval,niveau),ARCH=c(parvec, 0.1))
+dfZ3_4 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ4[dfZ4$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),ARCH=c(parvec, 0.1))
+dfZ4_4 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfZ51[dfZ51$grp == parvec[i],]
+  pvec1 <- 1-ecdf(simdf$valh0)(simdf$val)
+  
+  simdf <- dfZ52[dfZ52$grp == parvec[i],]
+  pvec2 <- 1-ecdf(simdf$valh0)(simdf$val)
+  
+  pvals <- numeric(length(pvec1))
+  for (j in 1:length(pvec1)){
+    pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+  }
+  pval[i] <- mean(pvals <= niveau)
+}
+
+pvaldf <- data.frame(p=c(pval, niveau),ARCH=c(parvec, 0.1))
+dfZ5_4 <- pvaldf
+pvaldf
+```
+
+```{r}
+pval <- numeric(L)
+
+for (i in 1:L){
+  simdf <- dfnum[dfnum$grp == parvec[i],]
+  
+  quant <- quantile(simdf$valh0, probs = niveau)
+  pval[i] <- ecdf(simdf$val)(quant)
+}
+
+pvaldf <- data.frame(p=c(pval,niveau),ARCH=c(parvec, 0.1))
+dfnum_4 <- pvaldf
+pvaldf
+```
+
+
+Plots for sensitivitetsanalyser
+Gemt data
+```{r}
+save(dfZ2_1, dfZ2_2, dfZ2_3, dfZ2_4, dfZ3_1, dfZ3_2, dfZ3_3, dfZ3_4, dfZ4_1, dfZ4_2, dfZ4_3, dfZ4_4, dfZ5_1, dfZ5_2, dfZ5_3, dfZ5_4, dfnum_1, dfnum_2, dfnum_3, dfnum_4, file = "dataframes5.RData")
+```
+
+
+Load data!!!
+```{r}
+load("dataframes5.RData")
+```
+
+
+Plots
+```{r}
+dfZ2_1$test <- "Z2"
+dfZ3_1$test <- "Z3"
+dfZ4_1$test <- "Z4"
+dfZ5_1$test <- "Z5"
+dfnum_1$test <- "numExceedances"
+
+df_all <- bind_rows(dfZ2_1, dfZ3_1, dfZ4_1, dfZ5_1, dfnum_1)
+df_all$df_fake <- rep(c(3,4,5,6,7,8,9,11,12,14,10), 5)
+
+ggplot(df_all, aes(x = df_fake, y = p, color = test)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Degrees of freedom", y = "Rejection rate", color = "Test") +
+  geom_vline(xintercept = 10, color = "grey") +
+  scale_x_continuous(
+    breaks = df_all$df_fake,
+    labels = df_all$df
+  ) +
+  theme_minimal()
+```
+
+```{r}
+dfZ2_2$test <- "Z2"
+dfZ3_2$test <- "Z3"
+dfZ4_2$test <- "Z4"
+dfZ5_2$test <- "Z5"
+dfnum_2$test <- "numExceedances"
+
+df_all <- bind_rows(dfZ2_2, dfZ3_2, dfZ4_2, dfZ5_2, dfnum_2)
+
+ggplot(df_all, aes(x = unconditional_var, y = p, color = test)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Unconditional variance", y = "Rejection rate", color = "Test") +
+  geom_vline(xintercept = 0.2, color = "grey") +
+  theme_minimal()
+```
+
+```{r}
+dfZ2_3$test <- "Z2"
+dfZ3_3$test <- "Z3"
+dfZ4_3$test <- "Z4"
+dfZ5_3$test <- "Z5"
+dfnum_3$test <- "numExceedances"
+
+df_all <- bind_rows(dfZ2_3, dfZ3_3, dfZ4_3, dfZ5_3, dfnum_3)
+
+ggplot(df_all, aes(x = persistence, y = p, color = test)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Persistence", y = "Rejection rate", color = "Test") +
+  geom_vline(xintercept = 0.95, color = "grey") +
+  theme_minimal()
+```
+
+```{r}
+dfZ2_4$test <- "Z2"
+dfZ3_4$test <- "Z3"
+dfZ4_4$test <- "Z4"
+dfZ5_4$test <- "Z5"
+dfnum_4$test <- "numExceedances"
+
+df_all <- bind_rows(dfZ2_4, dfZ3_4, dfZ4_4, dfZ5_4, dfnum_4)
+
+ggplot(df_all, aes(x = ARCH, y = p, color = test)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "ARCH", y = "Rejection rate", color = "Test") +
+  geom_vline(xintercept = 0.1, color = "grey") +
+  theme_minimal()
+```
+
+
+
+
+
+
+
+PLOTS MED ANDRE NAVNE
+```{r}
+dfZ2_1$test <- "Z2"
+dfZ3_1$test <- "Z3"
+dfZ4_1$test <- "Z1"
+dfZ5_1$test <- "Z4"
+dfnum_1$test <- "numExceedances"
+
+df_all <- bind_rows(dfZ2_1, dfZ3_1, dfZ4_1, dfZ5_1, dfnum_1)
+df_all$df_fake <- rep(c(3,4,5,6,7,8,9,11,12,14,10), 5)
+
+ggplot(df_all, aes(x = df_fake, y = p, color = test)) +
+  geom_line() +
+  geom_point() +
+  ylim(0, 1) +
+  labs(x = "Frihedsgrader", y = "Afvisningsrate", color = "Test") +
+  geom_vline(xintercept = 10, color = "grey") +
+  scale_x_continuous(
+    breaks = df_all$df_fake,
+    labels = df_all$df
+  ) +
+  theme_minimal()
+```
+
+```{r}
+dfZ2_2$test <- "Z2"
+dfZ3_2$test <- "Z3"
+dfZ4_2$test <- "Z1"
+dfZ5_2$test <- "Z4"
+dfnum_2$test <- "numExceedances"
+
+df_all <- bind_rows(dfZ2_2, dfZ3_2, dfZ4_2, dfZ5_2, dfnum_2)
+
+ggplot(df_all, aes(x = unconditional_var, y = p, color = test)) +
+  geom_line() +
+  geom_point() +
+  ylim(0, 1) +
+  labs(x = "Ubetinget varians", y = "Afvisningsrate", color = "Test") +
+  geom_vline(xintercept = 0.2, color = "grey") +
+  theme_minimal()
+```
+
+```{r}
+dfZ2_3$test <- "Z2"
+dfZ3_3$test <- "Z3"
+dfZ4_3$test <- "Z1"
+dfZ5_3$test <- "Z4"
+dfnum_3$test <- "numExceedances"
+
+df_all <- bind_rows(dfZ2_3, dfZ3_3, dfZ4_3, dfZ5_3, dfnum_3)
+
+ggplot(df_all, aes(x = persistence, y = p, color = test)) +
+  geom_line() +
+  geom_point() +
+  ylim(0, 1) +
+  labs(x = "Persistens", y = "Afvisningsrate", color = "Test") +
+  geom_vline(xintercept = 0.95, color = "grey") +
+  theme_minimal()
+```
+
+```{r}
+dfZ2_4$test <- "Z2"
+dfZ3_4$test <- "Z3"
+dfZ4_4$test <- "Z1"
+dfZ5_4$test <- "Z4"
+dfnum_4$test <- "numExceedances"
+
+df_all <- bind_rows(dfZ2_4, dfZ3_4, dfZ4_4, dfZ5_4, dfnum_4)
+
+ggplot(df_all, aes(x = ARCH, y = p, color = test)) +
+  geom_line() +
+  geom_point() +
+  ylim(0, 1) +
+  labs(x = "ARCH-parameter", y = "Afvisningsrate", color = "Test") +
+  geom_vline(xintercept = 0.1, color = "grey") +
+  theme_minimal()
+```
+
+
+
+
+
+
+
+

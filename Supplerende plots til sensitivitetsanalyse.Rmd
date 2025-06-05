@@ -1,0 +1,796 @@
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(rugarch)
+library(fGarch)
+library(QRM)
+library(ggbreak)
+library(quantmod)
+library(tidyverse)
+```
+
+FUNKTIONER
+```{r}
+simf <- function(mu_,phi,omega,alpha,beta,nu){
+  zt <- rstd(T_+burn, nu = nu)
+  X <- numeric(T_+burn)
+  sigma <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  eps[1] <- sigma[1]*zt[1]
+  mu[1] <- 0+mu_
+  X[1] <- mu[1]+eps[1]
+  
+  for (i in 2:(T_+burn)){
+    sigma[i] <- sqrt(omega+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+    eps[i] <- sigma[i]*zt[i]
+    mu[i] <- phi*X[i-1]+mu_
+    X[i] <- mu[i]+eps[i]
+  }
+  
+  return(list(X = tail(X,T_), mu = tail(mu,T_), sigma = tail(sigma,T_), Xfull = X))
+}
+```
+
+
+```{r}
+estim <- function(mu_,phi,omega,alpha,beta,nu,Xfull){
+  sigma <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  
+  mu[1] <- 0+mu_
+  eps[1] <- Xfull[1]-mu[1]
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  
+  for (i in 2:(T_+burn)){
+    mu[i] <- phi*Xfull[i-1]+mu_
+    eps[i] <- Xfull[i]-mu[i]
+    sigma[i] <- sqrt(omega+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+  }
+  
+  return(list(mu = tail(mu,T_), sigma = tail(sigma,T_)))
+}
+```
+
+
+
+
+
+
+PLOTS
+```{r}
+T_ <- 250
+burn <- 250
+beta <- 0.01
+alpha <- 0.025
+```
+
+
+ARCH ændring
+H1
+```{r}
+mu1 <- 0
+ar1 <- 0
+omega1 <- 0.01
+alpha1 <- 0.1
+beta1 <- 0.85
+nu1 <- 10
+```
+
+H0
+```{r}
+mu01 <- 0
+ar01 <- 0
+omega01 <- omega1
+alpha01 <- 0.01
+beta01 <- alpha1+beta1-alpha01
+nu01 <- 10
+```
+
+```{r}
+mu02 <- 0
+ar02 <- 0
+omega02 <- omega1
+alpha02 <- 0.2
+beta02 <- alpha1+beta1-alpha02
+nu02 <- 10
+```
+
+```{r}
+set.seed(2025)
+sim <- simf(mu1,ar1,omega1,alpha1,beta1,nu1)
+X <- sim$X
+Xfull <- sim$Xfull
+
+#H1
+sigma <- sim$sigma
+mu <- sim$mu
+VaR <- -mu+sigma*(-qstd(alpha, nu=nu1))
+ES <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu1),lower = 0,upper = alpha)$value
+
+#H0
+estimations <- estim(mu01,ar01,omega01,alpha01,beta01,nu01,Xfull)
+sigma <- estimations$sigma
+mu <- estimations$mu
+VaR01 <- -mu+sigma*(-qstd(alpha, nu=nu01))
+ES01 <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu01),lower = 0,upper = alpha)$value
+
+#H0 igen
+estimations <- estim(mu02,ar02,omega02,alpha02,beta02,nu02,Xfull)
+sigma <- estimations$sigma
+mu <- estimations$mu
+VaR02 <- -mu+sigma*(-qstd(alpha, nu=nu02))
+ES02 <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu02),lower = 0,upper = alpha)$value
+```
+
+```{r}
+plot(X, type = "l", col = "black", lwd = 2, ylab = "Værdi", xlab = "Tid/Observation", main = "ES estimater ved misspecificering af ARCH-parameteren", ylim = c(min(c(X, -ES, -ES01, -ES02)), max(c(X, -ES, -ES01, -ES02))))
+lines(-ES, col = "blue",  lwd = 2)
+lines(-ES01, col = "red",  lwd = 2)
+lines(-ES02, col = "pink",  lwd = 2)
+
+#Legend
+legend("topright", legend = c("Sand ES", "Lavere ARCH", "Højere ARCH"), 
+       col = c("blue", "red", "pink"), lwd = c(2, 2, 2))
+```
+
+Ubetinget varians ændring
+H1
+```{r}
+mu1 <- 0
+ar1 <- 0
+omega1 <- 0.01
+alpha1 <- 0.1
+beta1 <- 0.85
+nu1 <- 10
+```
+
+H0
+```{r}
+mu01 <- 0
+ar01 <- 0
+omega01 <- 0.05*(1-alpha1-beta1)
+alpha01 <- alpha1
+beta01 <- beta1
+nu01 <- nu1
+```
+
+```{r}
+mu02 <- 0
+ar02 <- 0
+omega02 <- 0.6*(1-alpha1-beta1)
+alpha02 <- alpha1
+beta02 <- beta1
+nu02 <- nu1
+```
+
+```{r}
+set.seed(2025)
+sim <- simf(mu1,ar1,omega1,alpha1,beta1,nu1)
+X <- sim$X
+Xfull <- sim$Xfull
+
+#H1
+sigma <- sim$sigma
+mu <- sim$mu
+VaR <- -mu+sigma*(-qstd(alpha, nu=nu1))
+ES <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu1),lower = 0,upper = alpha)$value
+
+#H0
+estimations <- estim(mu01,ar01,omega01,alpha01,beta01,nu01,Xfull)
+sigma <- estimations$sigma
+mu <- estimations$mu
+VaR01 <- -mu+sigma*(-qstd(alpha, nu=nu01))
+ES01 <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu01),lower = 0,upper = alpha)$value
+
+#H0 igen
+estimations <- estim(mu02,ar02,omega02,alpha02,beta02,nu02,Xfull)
+sigma <- estimations$sigma
+mu <- estimations$mu
+VaR02 <- -mu+sigma*(-qstd(alpha, nu=nu02))
+ES02 <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu02),lower = 0,upper = alpha)$value
+```
+
+```{r}
+plot(X, type = "l", col = "black", lwd = 2, ylab = "Værdi", xlab = "Tid/Observation", main = "ES estimater ved misspecificering af ubetinget varians", ylim = c(min(c(X, -ES, -ES01, -ES02)), max(c(X, -ES, -ES01, -ES02))))
+lines(-ES, col = "blue",  lwd = 2)
+lines(-ES01, col = "red",  lwd = 2)
+lines(-ES02, col = "pink",  lwd = 2)
+
+#Legend
+legend("topright", legend = c("Sand ES", "Lavere ubetinget varians", "Højere ubetinget varians"), 
+       col = c("blue", "red", "pink"), lwd = c(2, 2, 2))
+```
+
+Persistens ændring
+H1
+```{r}
+mu1 <- 0
+ar1 <- 0
+omega1 <- 0.01
+alpha1 <- 0.1
+beta1 <- 0.85
+nu1 <- 10
+```
+
+H0
+```{r}
+d <- 0.9/(alpha1+beta1)
+mu01 <- 0
+ar01 <- 0
+alpha01 <- alpha1*d
+beta01 <- beta1*d
+omega01 <- omega1/(1-alpha1-beta1)*(1-alpha01-beta01)
+nu01 <- nu1
+```
+
+```{r}
+d <- 0.99/(alpha1+beta1)
+mu02 <- 0
+ar02 <- 0
+alpha02 <- alpha1*d
+beta02 <- beta1*d
+omega02 <- omega1/(1-alpha1-beta1)*(1-alpha02-beta02)
+nu02 <- nu1
+```
+
+```{r}
+set.seed(2025)
+sim <- simf(mu1,ar1,omega1,alpha1,beta1,nu1)
+X <- sim$X
+Xfull <- sim$Xfull
+
+#H1
+sigma <- sim$sigma
+mu <- sim$mu
+VaR <- -mu+sigma*(-qstd(alpha, nu=nu1))
+ES <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu1),lower = 0,upper = alpha)$value
+
+#H0
+estimations <- estim(mu01,ar01,omega01,alpha01,beta01,nu01,Xfull)
+sigma <- estimations$sigma
+mu <- estimations$mu
+VaR01 <- -mu+sigma*(-qstd(alpha, nu=nu01))
+ES01 <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu01),lower = 0,upper = alpha)$value
+
+#H0 igen
+estimations <- estim(mu02,ar02,omega02,alpha02,beta02,nu02,Xfull)
+sigma <- estimations$sigma
+mu <- estimations$mu
+VaR02 <- -mu+sigma*(-qstd(alpha, nu=nu02))
+ES02 <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu02),lower = 0,upper = alpha)$value
+```
+
+```{r}
+plot(X, type = "l", col = "black", lwd = 2, ylab = "Værdi", xlab = "Tid/Observation", main = "ES estimater ved misspecificering af persistensen", ylim = c(min(c(X, -ES, -ES01, -ES02)), max(c(X, -ES, -ES01, -ES02))))
+lines(-ES, col = "blue",  lwd = 2)
+lines(-ES01, col = "red",  lwd = 2)
+lines(-ES02, col = "pink",  lwd = 2)
+
+#Legend
+legend("topright", legend = c("Sand ES", "Lavere persistens", "Højere persistens"), 
+       col = c("blue", "red", "pink"), lwd = c(2, 2, 2))
+```
+
+DF ÆNDRING
+H1
+```{r}
+mu1 <- 0
+ar1 <- 0
+omega1 <- 0.01
+alpha1 <- 0.1
+beta1 <- 0.85
+nu1 <- 10
+```
+
+H0
+```{r}
+mu01 <- 0
+ar01 <- 0
+omega01 <- omega1
+alpha01 <- alpha1
+beta01 <- beta1
+nu01 <- 3
+```
+
+```{r}
+mu02 <- 0
+ar02 <- 0
+omega02 <- omega1
+alpha02 <- alpha1
+beta02 <- beta1
+nu02 <- 100
+```
+
+```{r}
+set.seed(2025)
+sim <- simf(mu1,ar1,omega1,alpha1,beta1,nu1)
+X <- sim$X
+Xfull <- sim$Xfull
+
+#H1
+sigma <- sim$sigma
+mu <- sim$mu
+VaR <- -mu+sigma*(-qstd(alpha, nu=nu1))
+ES <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu1),lower = 0,upper = alpha)$value
+
+#H0
+estimations <- estim(mu01,ar01,omega01,alpha01,beta01,nu01,Xfull)
+sigma <- estimations$sigma
+mu <- estimations$mu
+VaR01 <- -mu+sigma*(-qstd(alpha, nu=nu01))
+ES01 <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu01),lower = 0,upper = alpha)$value
+
+#H0 igen
+estimations <- estim(mu02,ar02,omega02,alpha02,beta02,nu02,Xfull)
+sigma <- estimations$sigma
+mu <- estimations$mu
+VaR02 <- -mu+sigma*(-qstd(alpha, nu=nu02))
+ES02 <- -mu+sigma*(-1/alpha)*
+  integrate(function(q) qstd(q, nu=nu02),lower = 0,upper = alpha)$value
+```
+
+```{r}
+plot(X, type = "l", col = "black", lwd = 2, ylab = "Værdi", xlab = "Tid/Observation", main = "ES estimater ved misspecificering af frihedsgrader", ylim = c(min(c(X, -ES, -ES01, -ES02)), max(c(X, -ES, -ES01, -ES02))))
+lines(-ES, col = "blue",  lwd = 2)
+lines(-ES01, col = "red",  lwd = 2)
+lines(-ES02, col = "pink",  lwd = 2)
+
+#Legend
+legend("topright", legend = c("Sand ES", "Lavere frihedsgrader", "Højere frihedsgrader"), 
+       col = c("blue", "red", "pink"), lwd = c(2, 2, 2))
+```
+
+
+
+
+
+
+
+
+
+
+
+Udvidet Acerbi og Szekely
+```{r}
+simf <- function(mu_,phi,omega,alpha,beta,nu){
+  zt <- rstd(T_+burn, nu = nu)
+  X <- numeric(T_+burn)
+  sigma <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  eps[1] <- sigma[1]*zt[1]
+  mu[1] <- 0+mu_
+  X[1] <- mu[1]+eps[1]
+  
+  for (i in 2:(T_+burn)){
+    sigma[i] <- sqrt(omega+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+    eps[i] <- sigma[i]*zt[i]
+    mu[i] <- phi*X[i-1]+mu_
+    X[i] <- mu[i]+eps[i]
+  }
+  
+  return(list(X = tail(X,T_), mu = tail(mu,T_), sigma = tail(sigma,T_), Xfull = X))
+}
+```
+
+
+```{r}
+estim <- function(mu_,phi,omega,alpha,beta,nu,Xfull){
+  sigma <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  
+  mu[1] <- 0+mu_
+  eps[1] <- Xfull[1]-mu[1]
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  
+  for (i in 2:(T_+burn)){
+    mu[i] <- phi*Xfull[i-1]+mu_
+    eps[i] <- Xfull[i]-mu[i]
+    sigma[i] <- sqrt(omega+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+  }
+  
+  return(list(mu = tail(mu,T_), sigma = tail(sigma,T_)))
+}
+```
+
+
+TEST
+```{r}
+Z2f <- function(X,VaR,ES){
+  N <- length(X)
+  sum(X*(X+VaR<0)/(N*alpha*ES))+1
+}
+
+Z3f <- function(X,mu,sigma,nu){
+  N <- length(X)
+  Ta <- floor(T_*alpha)
+  
+  Ut <- pstd(X, mu, sigma, nu)
+  quant <- qstd(Ut, nu = nu)
+  
+  EST <- numeric(N)
+  for (i in 1:N){
+    Y <- mu[i]+sigma[i]*quant
+    EST[i] <- -1/Ta*sum(sort(Y)[1:Ta])
+  }
+  
+  betaint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)}, lower = 0, upper = 1)$value
+  betaqint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)*qstd(p, nu=nu)}, 
+                        lower = 0, upper = 1)$value
+  
+  EV <- -T_/Ta*(betaint*mu+betaqint*sigma)
+  
+  -mean(EST/EV)+1
+}
+
+Z4f <- function(X,VaR,ES){
+  mean((X+ES)[X+VaR<0])
+}
+
+Z5f <- function(X,VaR,ES){
+  r <- X
+  q <- -VaR
+  e <- -ES
+  n <- length(r)
+  
+  V <- cbind(alpha - (r <= q),
+             e - q + (r <= q) * (q - r) / alpha)
+  
+  H1 <- aperm(replicate(n, diag(2)))
+  hV1 <- apply(H1, 2, function(x) rowSums(x * V))
+  omega1 <- crossprod(hV1) / n
+  
+  t1 <- sqrt(n) * diag(omega1)^(-1/2) * colMeans(hV1)
+}
+```
+
+
+Sensitivitetsanalyse!!!!!
+```{r, warning=FALSE, message=FALSE}
+T_ <- 250
+burn <- 250
+beta <- 0.01
+alpha <- 0.025
+M <- 1000
+```
+
+```{r}
+#H0 parametre, vores model
+mu0 <- 0
+ar0 <- 0
+omega0 <- 0.01
+alpha0 <- 0.1
+beta0 <- 0.85
+nu0 <- 10
+```
+
+
+Sample under H0
+```{r, warning=FALSE, message=FALSE}
+Z2sh0 <- numeric(M)
+Z3sh0 <- numeric(M)
+Z4sh0 <- numeric(M)
+Z5sh01 <- numeric(M)
+Z5sh02 <- numeric(M)
+numexh0 <- numeric(M)
+
+set.seed(2025)
+for (i in 1:M){
+  sim <- simf(mu0,ar0,omega0,alpha0,beta0,nu0)
+  X <- sim$X
+  mu <- sim$mu
+  sigma <- sim$sigma
+  
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+  ES <- -mu+sigma*(-1/alpha)*EZI
+  VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+  
+  Z2sh0[i] <- Z2f(X,VaR,ES)
+  Z3sh0[i] <- Z3f(X,mu,sigma,nu0)
+  Z4sh0[i] <- Z4f(X,VaR,ES)
+  Z5val <- Z5f(X,VaR,ES)
+  Z5sh01[i] <- Z5val[1]
+  Z5sh02[i] <- Z5val[2]
+  numexh0[i] <- -sum(X < -VaR1)
+}
+```
+
+Signifikansniveau tættest på 5% for number of exceedences
+```{r}
+data <- numexh0
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau
+```
+
+
+Ændr frihedsgrader (df-er)
+```{r}
+##Sand model
+parvec <- c(3,4,5,6,7,8,9,11,12,100)
+L <- length(parvec)
+```
+
+Sample under H_1
+```{r, warning=FALSE, message=FALSE}
+Z2s <- numeric(L*M)
+Z3s <- numeric(L*M)
+Z4s <- numeric(L*M)
+Z5s1 <- numeric(L*M)
+Z5s2 <- numeric(L*M)
+numex <- numeric(L*M)
+
+set.seed(2025)
+for (j in 1:L){
+  nuT <- parvec[j]
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  for (i in 1:M){
+    sim <- simf(mu0,ar0,omega0,alpha0,beta0,nuT)
+    X <- sim$X
+    Xfull <- sim$Xfull
+    mu <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$mu
+    sigma <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$sigma
+    
+    VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+    ES <- -mu+sigma*(-1/alpha)*EZI
+    VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+    
+    Z2s[i+(j-1)*M] <- Z2f(X,VaR,ES)
+    Z3s[i+(j-1)*M] <- Z3f(X,mu,sigma,nu0)
+    Z4s[i+(j-1)*M] <- Z4f(X,VaR,ES)
+    Z5val <- Z5f(X,VaR,ES)
+    Z5s1[i+(j-1)*M] <- Z5val[1]
+    Z5s2[i+(j-1)*M] <- Z5val[2]
+    numex[i+(j-1)*M] <- -sum(X < -VaR1)
+  }
+}
+```
+
+
+```{r}
+data <- data.frame(vals = c(Z5s1[(9*M+1):(10*M)],Z5sh01), grp = rep(c("sand","model"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", alpha = 0.5) +
+  scale_fill_manual(values = c("sand" = "green", "model" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+
+```{r}
+data <- data.frame(vals = c(Z5s2[(9*M+1):(10*M)],Z5sh02), grp = rep(c("sand","model"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("sand" = "green", "model" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+
+Ubetinget varians ændring (omega-er)
+```{r}
+##Sand model
+parvec <- c(0.05, 0.1, 0.15, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6)*(1-alpha0-beta0)
+L <- length(parvec)
+```
+
+Sample under H_1
+```{r, warning=FALSE, message=FALSE}
+Z2s <- numeric(L*M)
+Z3s <- numeric(L*M)
+Z4s <- numeric(L*M)
+Z5s1 <- numeric(L*M)
+Z5s2 <- numeric(L*M)
+numex <- numeric(L*M)
+
+set.seed(2025)
+for (j in 1:L){
+  omegaT <- parvec[j]
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  for (i in 1:M){
+    sim <- simf(mu0,ar0,omegaT,alpha0,beta0,nu0)
+    X <- sim$X
+    Xfull <- sim$Xfull
+    mu <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$mu
+    sigma <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$sigma
+    
+    VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+    ES <- -mu+sigma*(-1/alpha)*EZI
+    VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+    
+    Z2s[i+(j-1)*M] <- Z2f(X,VaR,ES)
+    Z3s[i+(j-1)*M] <- Z3f(X,mu,sigma,nu0)
+    Z4s[i+(j-1)*M] <- Z4f(X,VaR,ES)
+    Z5val <- Z5f(X,VaR,ES)
+    Z5s1[i+(j-1)*M] <- Z5val[1]
+    Z5s2[i+(j-1)*M] <- Z5val[2]
+    numex[i+(j-1)*M] <- -sum(X < -VaR1)
+  }
+}
+```
+
+
+```{r}
+data <- data.frame(vals = c(Z5s1[(0*M+1):(1*M)],Z5sh01), grp = rep(c("sand","model"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", alpha = 0.5) +
+  scale_fill_manual(values = c("sand" = "green", "model" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+
+```{r}
+set.seed(3)
+EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+sim <- simf(mu0,ar0,0.05*(1-alpha0-beta0),alpha0,beta0,nu0)
+X <- sim$X
+Xfull <- sim$Xfull
+mu <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$mu
+sigma <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$sigma
+VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+ES <- -mu+sigma*(-1/alpha)*EZI
+VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+r <- X
+q <- -VaR
+e <- -ES
+n <- length(r)
+V <- cbind(alpha - (r <= q),
+           e - q + (r <= q) * (q - r) / alpha)
+H1 <- aperm(replicate(n, diag(2)))
+hV1 <- apply(H1, 2, function(x) rowSums(x * V))
+omega1 <- crossprod(hV1) / n
+(0.025^2)^(-1/2)
+colMeans((hV1))[1]
+t1 <- sqrt(n) * diag(omega1)^(-1/2) * colMeans(hV1)
+t1
+```
+
+```{r}
+matrix(c(1,2,3,4),2,2) %*% c(1,2)
+```
+
+
+
+```{r}
+data <- data.frame(vals = c(Z5s2[(0*M+1):(1*M)],Z5sh02), grp = rep(c("sand","model"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("sand" = "green", "model" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+
+Persistens ændring
+Sample under H_1 (vektor af d-er)
+```{r}
+##Model, H_0
+parvec <- c(0.91, 0.92, 0.93, 0.94, 0.96, 0.97, 0.98, 0.99)/(alpha0+beta0)
+L <- length(parvec)
+```
+
+```{r, warning=FALSE, message=FALSE}
+Z2s <- numeric(L*M)
+Z3s <- numeric(L*M)
+Z4s <- numeric(L*M)
+Z5s1 <- numeric(L*M)
+Z5s2 <- numeric(L*M)
+numex <- numeric(L*M)
+
+set.seed(2025)
+for (j in 1:L){
+  alphaT <- parvec[j]*alpha0
+  betaT <- parvec[j]*beta0
+  omegaT <- omega0/(1-alpha0-beta0)*(1-alphaT-betaT)
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  for (i in 1:M){
+    sim <- simf(mu0,ar0,omegaT,alphaT,betaT,nu0)
+    X <- sim$X
+    Xfull <- sim$Xfull
+    mu <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$mu
+    sigma <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$sigma
+    
+    VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+    ES <- -mu+sigma*(-1/alpha)*EZI
+    VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+    
+    Z2s[i+(j-1)*M] <- Z2f(X,VaR,ES)
+    Z3s[i+(j-1)*M] <- Z3f(X,mu,sigma,nu0)
+    Z4s[i+(j-1)*M] <- Z4f(X,VaR,ES)
+    Z5val <- Z5f(X,VaR,ES)
+    Z5s1[i+(j-1)*M] <- Z5val[1]
+    Z5s2[i+(j-1)*M] <- Z5val[2]
+    numex[i+(j-1)*M] <- -sum(X < -VaR1)
+  }
+}
+```
+
+
+
+Arch-ændring
+Sample under H_1 (vektor af alpha-er)
+```{r}
+##Model, H_0
+parvec <- c(0.01, 0.04, 0.06, 0.08, 0.12, 0.14, 0.16, 0.2)
+L <- length(parvec)
+```
+
+```{r, warning=FALSE, message=FALSE}
+Z2s <- numeric(L*M)
+Z3s <- numeric(L*M)
+Z4s <- numeric(L*M)
+Z5s1 <- numeric(L*M)
+Z5s2 <- numeric(L*M)
+numex <- numeric(L*M)
+
+set.seed(2025)
+for (j in 1:L){
+  alphaT <- parvec[j]
+  betaT <- beta0+alpha0-alphaT
+  EZI <- integrate(function(q) qstd(q, nu=nu0),lower = 0,upper = alpha)$value
+  
+  for (i in 1:M){
+    sim <- simf(mu0,ar0,omega0,alphaT,betaT,nu0)
+    X <- sim$X
+    Xfull <- sim$Xfull
+    mu <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$mu
+    sigma <- estim(mu0,ar0,omega0,alpha0,beta0,nu0,Xfull)$sigma
+    
+    VaR <- -mu+sigma*(-qstd(alpha, nu=nu0))
+    ES <- -mu+sigma*(-1/alpha)*EZI
+    VaR1 <- -mu+sigma*(-qstd(beta, nu=nu0))
+    
+    Z2s[i+(j-1)*M] <- Z2f(X,VaR,ES)
+    Z3s[i+(j-1)*M] <- Z3f(X,mu,sigma,nu0)
+    Z4s[i+(j-1)*M] <- Z4f(X,VaR,ES)
+    Z5val <- Z5f(X,VaR,ES)
+    Z5s1[i+(j-1)*M] <- Z5val[1]
+    Z5s2[i+(j-1)*M] <- Z5val[2]
+    numex[i+(j-1)*M] <- -sum(X < -VaR1)
+  }
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

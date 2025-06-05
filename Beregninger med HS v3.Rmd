@@ -1,0 +1,1567 @@
+Beregninger med HS
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(rugarch)
+library(fGarch)
+library(QRM)
+library(ggbreak)
+library(quantmod)
+library(tidyverse)
+```
+
+FUNKTIONER
+```{r}
+simf <- function(mu_,phi,omega,alpha,beta,nu){
+  zt <- rstd(T_+burn, nu = nu)
+  X <- numeric(T_+burn)
+  sigma <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  eps[1] <- sigma[1]*zt[1]
+  mu[1] <- 0+mu_
+  X[1] <- mu[1]+eps[1]
+  
+  for (i in 2:(T_+burn)){
+    sigma[i] <- sqrt(omega+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+    eps[i] <- sigma[i]*zt[i]
+    mu[i] <- phi*X[i-1]+mu_
+    X[i] <- mu[i]+eps[i]
+  }
+  
+  return(list(X = tail(X,T_), mu = tail(mu,T_), sigma = tail(sigma,T_), Xfull = X))
+}
+```
+
+TEST
+```{r}
+Z2f <- function(X,VaR,ES){
+  N <- length(X)
+  sum(X*(X+VaR<0)/(N*alpha*ES))+1
+}
+
+Z3f <- function(X,mu,sigma,nu){
+  N <- length(X)
+  Ta <- floor(T_*alpha)
+  
+  Ut <- pstd(X, mu, sigma, nu)
+  quant <- qstd(Ut, nu = nu)
+  
+  EST <- numeric(N)
+  for (i in 1:N){
+    Y <- mu[i]+sigma[i]*quant
+    EST[i] <- -1/Ta*sum(sort(Y)[1:Ta])
+  }
+  
+  betaint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)}, lower = 0, upper = 1)$value
+  betaqint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)*qstd(p, nu=nu)}, 
+                        lower = 0, upper = 1)$value
+  
+  EV <- -T_/Ta*(betaint*mu+betaqint*sigma)
+  
+  -mean(EST/EV)+1
+}
+
+Z4f <- function(X,VaR,ES){
+  mean((X+ES)[X+VaR<0])
+}
+
+Z5f <- function(X,VaR,ES){
+  r <- X
+  q <- -VaR
+  e <- -ES
+  n <- length(r)
+  
+  V <- cbind(alpha - (r <= q),
+             e - q + (r <= q) * (q - r) / alpha)
+  
+  H1 <- aperm(replicate(n, diag(2)))
+  hV1 <- apply(H1, 2, function(x) rowSums(x * V))
+  omega1 <- crossprod(hV1) / n
+  
+  t1 <- sqrt(n) * diag(omega1)^(-1/2) * colMeans(hV1)
+}
+```
+
+
+HS MED ÉN DGP
+PARAMETRE
+```{r}
+N <- 250 ##In sample
+T_ <- 500 ##Fuld datasæt
+burn <- 250 ##Burn in period
+beta <- 0.01
+alpha <- 0.025
+M <- 10000
+```
+
+```{r}
+mu_ <- 0
+ar <- 0
+omega <- 0.01
+alpha1 <- 0.1
+beta1 <- 0.85
+nu <- 10
+```
+
+
+Analyse
+```{r}
+Z2_mat <- matrix(NA,M,3)
+Z4_mat <- matrix(NA,M,3)
+Z51_mat <- matrix(NA,M,3)
+Z52_mat <- matrix(NA,M,3)
+numex_mat <- matrix(NA,M,3)
+
+#Til Weighted HS
+lambda <- 0.995
+prob_weights <- lambda^(N-1:N)*(1-lambda)/(1-lambda^N)
+prob_eq <- rep(1/N,N)
+
+#Simulation begynder her
+set.seed(2025)
+for (i in 1:M){
+  sim <- simf(mu_,ar,omega,alpha1,beta1,nu)
+  X <- sim$X
+  mu <- sim$mu
+  sigma <- sim$sigma
+  
+  EZI <- integrate(function(q) qstd(q, nu=nu),lower = 0,upper = alpha)$value
+  
+  VaR <- -mu+sigma*(-qstd(alpha, nu=nu))
+  ES <- -mu+sigma*(-1/alpha)*EZI
+  VaR1 <- -mu+sigma*(-qstd(beta, nu=nu))
+  
+  Z2_mat[i,1] <- Z2f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z4_mat[i,1] <- Z4f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z5val <- Z5f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z51_mat[i,1] <- Z5val[1]
+  Z52_mat[i,1] <- Z5val[2]
+  numex_mat[i,1] <- -sum(tail(X,T_-N) < -tail(VaR1,T_-N))
+  
+  VaRHS <- numeric(T_-N)
+  ESHS <- numeric(T_-N)
+  VaR1HS <- numeric(T_-N)
+  
+  VaRPWHS <- numeric(T_-N)
+  ESPWHS <- numeric(T_-N)
+  VaR1PWHS <- numeric(T_-N)
+  
+  for (j in (N+1):T_){
+    Rolwin <- X[(j-N):(j-1)]
+    
+    #Sorted order
+    sorted_order <- order(Rolwin)
+    sorted_rol <- Rolwin[sorted_order]
+    sorted_probs <- prob_weights[sorted_order]
+    sorted_eq_probs <- prob_eq[sorted_order]
+    
+    #HS
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < alpha) {
+      ptotal <- sum(sorted_eq_probs[1:numb])
+      #VaR
+      if (length(sorted_eq_probs[1:numb])==1){
+        VaRval <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_eq_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_eq_probs[1:numb])
+        VaRval <- f0+(f1-f0)/(ssh1-ssh0)*(alpha-ssh0)
+      }
+      #ES
+      if (ptotal >= alpha){
+        if (length(sorted_eq_probs[1:numb])==1){
+          ESval <- -1/alpha*(alpha*sorted_rol[1:numb])
+        } else {
+          probsadj <- c(sorted_eq_probs[1:(numb-1)],alpha-sum(sorted_eq_probs[1:(numb-1)]))
+          ESval <- -1/alpha*sum(probsadj*sorted_rol[1:numb])
+        }
+      }
+      numb <- numb+1
+    }
+    VaRHS[j-N] <- VaRval
+    ESHS[j-N] <- ESval
+    
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < beta) {
+      ptotal <- sum(sorted_eq_probs[1:numb])
+      #VaR1%
+      if (length(sorted_eq_probs[1:numb])==1){
+        VaR1val <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_eq_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_eq_probs[1:numb])
+        VaR1val <- f0+(f1-f0)/(ssh1-ssh0)*(beta-ssh0)
+      }
+      numb <- numb+1
+    }
+    VaR1HS[j-N] <- VaR1val
+    
+    #PWHS
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < alpha) {
+      ptotal <- sum(sorted_probs[1:numb])
+      #VaR
+      if (length(sorted_probs[1:numb])==1){
+        VaRval <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_probs[1:numb])
+        VaRval <- f0+(f1-f0)/(ssh1-ssh0)*(alpha-ssh0)
+      }
+      #ES
+      if (ptotal >= alpha){
+        if (length(sorted_probs[1:numb])==1){
+          ESval <- -1/alpha*(alpha*sorted_rol[1:numb])
+        } else {
+          probsadj <- c(sorted_probs[1:(numb-1)],alpha-sum(sorted_probs[1:(numb-1)]))
+          ESval <- -1/alpha*sum(probsadj*sorted_rol[1:numb])
+        }
+      }
+      numb <- numb+1
+    }
+    VaRPWHS[j-N] <- VaRval
+    ESPWHS[j-N] <- ESval
+    
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < beta) {
+      ptotal <- sum(sorted_probs[1:numb])
+      #VaR1%
+      if (length(sorted_probs[1:numb])==1){
+        VaR1val <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_probs[1:numb])
+        VaR1val <- f0+(f1-f0)/(ssh1-ssh0)*(beta-ssh0)
+      }
+      numb <- numb+1
+    }
+    VaR1PWHS[j-N] <- VaR1val
+  }
+  Z2_mat[i,2] <- Z2f(tail(X,T_-N),VaRHS,ESHS)
+  Z4_mat[i,2] <- Z4f(tail(X,T_-N),VaRHS,ESHS)
+  Z5val <- Z5f(tail(X,T_-N),VaRHS,ESHS)
+  Z51_mat[i,2] <- Z5val[1]
+  Z52_mat[i,2] <- Z5val[2]
+  numex_mat[i,2] <- -sum(tail(X,T_-N) < -VaR1HS)
+  
+  Z2_mat[i,3] <- Z2f(tail(X,T_-N),VaRPWHS,ESPWHS)
+  Z4_mat[i,3] <- Z4f(tail(X,T_-N),VaRPWHS,ESPWHS)
+  Z5val <- Z5f(tail(X,T_-N),VaRPWHS,ESPWHS)
+  Z51_mat[i,3] <- Z5val[1]
+  Z52_mat[i,3] <- Z5val[2]
+  numex_mat[i,3] <- -sum(tail(X,T_-N) < -VaR1PWHS)
+}
+```
+
+
+Gemt data
+```{r}
+save(Z2_mat,Z4_mat,Z51_mat,Z52_mat,numex_mat, file = "BeregningerMedHSv3.RData")
+```
+
+Load data!!!
+```{r}
+load("BeregningerMedHSv3.RData")
+```
+
+
+Power:
+```{r}
+data <- numex_mat[,1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau
+```
+
+REJECTION RATE FOR HS
+```{r}
+dfZ2 <- data.frame(val = Z2_mat[,2],
+                   valT = Z2_mat[,1])
+
+dfZ4 <- data.frame(val = Z4_mat[,2],
+                   valT = Z4_mat[,1])
+
+dfZ51 <- data.frame(val = Z51_mat[,2],
+                   valT = Z51_mat[,1])
+dfZ52 <- data.frame(val = Z52_mat[,2],
+                   valT = Z52_mat[,1])
+
+dfnum <- data.frame(val = numex_mat[,2],
+                    valT = numex_mat[,1])
+```
+
+
+Plots
+```{r}
+data <- data.frame(vals = c(Z2_mat[,2],Z2_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z4_mat[,2],Z4_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+data <- na.omit(data)
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z4 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z51_mat[,2],Z51_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z5_1 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z52_mat[,2],Z52_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(numex_mat[,2],numex_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Number of Exceedences Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+Z2 power for HS
+```{r}
+simdf <- dfZ2
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z4 power for HS
+```{r}
+simdf <- na.omit(dfZ4)
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z5 power for HS
+```{r}
+simdf <- dfZ51
+pvec1 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+simdf <- dfZ52
+pvec2 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+pvals <- numeric(length(pvec1))
+for (j in 1:length(pvec1)){
+  pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+}
+pval <- mean(pvals <= niveau)
+pval
+```
+
+Number of exceedences power for HS
+```{r}
+simdf <- dfnum
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+REJECTION RATE FOR PROBABILITY WEIGHTED HS
+```{r}
+dfZ2 <- data.frame(val = Z2_mat[,3],
+                   valT = Z2_mat[,1])
+
+dfZ4 <- data.frame(val = Z4_mat[,3],
+                   valT = Z4_mat[,1])
+
+dfZ51 <- data.frame(val = Z51_mat[,3],
+                   valT = Z51_mat[,1])
+dfZ52 <- data.frame(val = Z52_mat[,3],
+                   valT = Z52_mat[,1])
+
+dfnum <- data.frame(val = numex_mat[,3],
+                    valT = numex_mat[,1])
+```
+
+Plots
+```{r}
+data <- data.frame(vals = c(Z2_mat[,3],Z2_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z4_mat[,3],Z4_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+data <- na.omit(data)
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z4 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z51_mat[,3],Z51_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z5_1 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z52_mat[,3],Z52_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(numex_mat[,3],numex_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Number of Exceedences Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+Z2 power for PWHS
+```{r}
+simdf <- dfZ2
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z4 power for PWHS
+```{r}
+simdf <- na.omit(dfZ4)
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z5 power for PWHS
+```{r}
+simdf <- dfZ51
+pvec1 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+simdf <- dfZ52
+pvec2 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+pvals <- numeric(length(pvec1))
+for (j in 1:length(pvec1)){
+  pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+}
+pval <- mean(pvals <= niveau)
+pval
+```
+
+Number of exceedences power for PWHS
+```{r}
+simdf <- dfnum
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+HS med meget random shocks
+LAD OS VARIERE DGP undervejs
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(rugarch)
+library(fGarch)
+library(QRM)
+library(ggbreak)
+library(quantmod)
+library(tidyverse)
+```
+
+TEST
+```{r}
+Z2f <- function(X,VaR,ES){
+  N <- length(X)
+  sum(X*(X+VaR<0)/(N*alpha*ES))+1
+}
+
+Z3f <- function(X,mu,sigma,nu){
+  N <- length(X)
+  Ta <- floor(T_*alpha)
+  
+  Ut <- pstd(X, mu, sigma, nu)
+  quant <- qstd(Ut, nu = nu)
+  
+  EST <- numeric(N)
+  for (i in 1:N){
+    Y <- mu[i]+sigma[i]*quant
+    EST[i] <- -1/Ta*sum(sort(Y)[1:Ta])
+  }
+  
+  betaint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)}, lower = 0, upper = 1)$value
+  betaqint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)*qstd(p, nu=nu)}, 
+                        lower = 0, upper = 1)$value
+  
+  EV <- -T_/Ta*(betaint*mu+betaqint*sigma)
+  
+  -mean(EST/EV)+1
+}
+
+Z4f <- function(X,VaR,ES){
+  mean((X+ES)[X+VaR<0])
+}
+
+Z5f <- function(X,VaR,ES){
+  r <- X
+  q <- -VaR
+  e <- -ES
+  n <- length(r)
+  
+  V <- cbind(alpha - (r <= q),
+             e - q + (r <= q) * (q - r) / alpha)
+  
+  H1 <- aperm(replicate(n, diag(2)))
+  hV1 <- apply(H1, 2, function(x) rowSums(x * V))
+  omega1 <- crossprod(hV1) / n
+  
+  t1 <- sqrt(n) * diag(omega1)^(-1/2) * colMeans(hV1)
+}
+```
+
+
+FUNKTIONER
+```{r}
+simf <- function(mu_,phi,omega,alpha,beta,nu){
+  zt <- rstd(T_+burn, nu = nu)
+  X <- numeric(T_+burn)
+  sigma <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  ones <- rep(1,T_+burn)
+  
+  shockindex <- (burn+N+101):(burn+N+130)
+  ones[shockindex] <- 5
+  ztnew <- rstd(30, nu = 3)
+  zt[shockindex] <- ztnew
+  
+  
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  eps[1] <- sigma[1]*zt[1]
+  mu[1] <- 0+mu_
+  X[1] <- mu[1]+eps[1]
+  
+  for (i in 2:(T_+burn)){
+    sigma[i] <- sqrt(omega*ones[i]+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+    eps[i] <- sigma[i]*zt[i]
+    mu[i] <- phi*X[i-1]+mu_
+    X[i] <- mu[i]+eps[i]
+  }
+  
+  return(list(X = tail(X,T_), mu = tail(mu,T_), sigma = tail(sigma,T_), Xfull = X))
+}
+```
+
+PARAMETRE
+```{r}
+N <- 250 ##In sample
+T_ <- 500 ##Fuld datasæt
+burn <- 250 ##Burn in period
+beta <- 0.01
+alpha <- 0.025
+M <- 10000
+```
+
+```{r}
+mu_ <- 0
+ar <- 0
+omega <- 0.01
+alpha1 <- 0.1
+beta1 <- 0.85
+nu <- 10
+```
+
+Visualisering
+```{r}
+sim <- simf(mu_,ar,omega,alpha1,beta1,nu)
+X <- sim$X
+
+plot(X, type = "l", col = "black", lwd = 2, ylab = "Værdi", xlab = "Tid/Observation", main = "ES estimater ved misspecificering af frihedsgrader")
+```
+
+
+Analyse
+```{r}
+Z2_mat <- matrix(NA,M,3)
+Z4_mat <- matrix(NA,M,3)
+Z51_mat <- matrix(NA,M,3)
+Z52_mat <- matrix(NA,M,3)
+numex_mat <- matrix(NA,M,3)
+
+#Til Weighted HS
+lambda <- 0.995
+prob_weights <- lambda^(N-1:N)*(1-lambda)/(1-lambda^N)
+prob_eq <- rep(1/N,N)
+
+#Simulation begynder her
+set.seed(2025)
+for (i in 1:M){
+  sim <- simf(mu_,ar,omega,alpha1,beta1,nu)
+  X <- sim$X
+  mu <- sim$mu
+  sigma <- sim$sigma
+  
+  EZI <- integrate(function(q) qstd(q, nu=nu),lower = 0,upper = alpha)$value
+  EZIdflow <- integrate(function(q) qstd(q, nu=3),lower = 0,upper = alpha)$value
+  
+  VaR <- -mu+sigma*(-qstd(alpha, nu=nu))
+  ES <- -mu+sigma*(-1/alpha)*EZI
+  VaR1 <- -mu+sigma*(-qstd(beta, nu=nu))
+  
+  VaR[(N+101):(N+130)] <- -mu[(N+101):(N+130)]+sigma[(N+101):(N+130)]*(-qstd(alpha, nu=3))
+  ES[(N+101):(N+130)] <- -mu[(N+101):(N+130)]+sigma[(N+101):(N+130)]*(-1/alpha)*EZIdflow
+  VaR1[(N+101):(N+130)] <- -mu[(N+101):(N+130)]+sigma[(N+101):(N+130)]*(-qstd(beta, nu=3))
+  
+  Z2_mat[i,1] <- Z2f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z4_mat[i,1] <- Z4f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z5val <- Z5f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z51_mat[i,1] <- Z5val[1]
+  Z52_mat[i,1] <- Z5val[2]
+  numex_mat[i,1] <- -sum(tail(X,T_-N) < -tail(VaR1,T_-N))
+  
+  VaRHS <- numeric(T_-N)
+  ESHS <- numeric(T_-N)
+  VaR1HS <- numeric(T_-N)
+  
+  VaRPWHS <- numeric(T_-N)
+  ESPWHS <- numeric(T_-N)
+  VaR1PWHS <- numeric(T_-N)
+  
+  for (j in (N+1):T_){
+    Rolwin <- X[(j-N):(j-1)]
+    
+    #Sorted order
+    sorted_order <- order(Rolwin)
+    sorted_rol <- Rolwin[sorted_order]
+    sorted_probs <- prob_weights[sorted_order]
+    sorted_eq_probs <- prob_eq[sorted_order]
+    
+    #HS
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < alpha) {
+      ptotal <- sum(sorted_eq_probs[1:numb])
+      #VaR
+      if (length(sorted_eq_probs[1:numb])==1){
+        VaRval <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_eq_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_eq_probs[1:numb])
+        VaRval <- f0+(f1-f0)/(ssh1-ssh0)*(alpha-ssh0)
+      }
+      #ES
+      if (ptotal >= alpha){
+        if (length(sorted_eq_probs[1:numb])==1){
+          ESval <- -1/alpha*(alpha*sorted_rol[1:numb])
+        } else {
+          probsadj <- c(sorted_eq_probs[1:(numb-1)],alpha-sum(sorted_eq_probs[1:(numb-1)]))
+          ESval <- -1/alpha*sum(probsadj*sorted_rol[1:numb])
+        }
+      }
+      numb <- numb+1
+    }
+    VaRHS[j-N] <- VaRval
+    ESHS[j-N] <- ESval
+    
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < beta) {
+      ptotal <- sum(sorted_eq_probs[1:numb])
+      #VaR1%
+      if (length(sorted_eq_probs[1:numb])==1){
+        VaR1val <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_eq_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_eq_probs[1:numb])
+        VaR1val <- f0+(f1-f0)/(ssh1-ssh0)*(beta-ssh0)
+      }
+      numb <- numb+1
+    }
+    VaR1HS[j-N] <- VaR1val
+    
+    #PWHS
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < alpha) {
+      ptotal <- sum(sorted_probs[1:numb])
+      #VaR
+      if (length(sorted_probs[1:numb])==1){
+        VaRval <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_probs[1:numb])
+        VaRval <- f0+(f1-f0)/(ssh1-ssh0)*(alpha-ssh0)
+      }
+      #ES
+      if (ptotal >= alpha){
+        if (length(sorted_probs[1:numb])==1){
+          ESval <- -1/alpha*(alpha*sorted_rol[1:numb])
+        } else {
+          probsadj <- c(sorted_probs[1:(numb-1)],alpha-sum(sorted_probs[1:(numb-1)]))
+          ESval <- -1/alpha*sum(probsadj*sorted_rol[1:numb])
+        }
+      }
+      numb <- numb+1
+    }
+    VaRPWHS[j-N] <- VaRval
+    ESPWHS[j-N] <- ESval
+    
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < beta) {
+      ptotal <- sum(sorted_probs[1:numb])
+      #VaR1%
+      if (length(sorted_probs[1:numb])==1){
+        VaR1val <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_probs[1:numb])
+        VaR1val <- f0+(f1-f0)/(ssh1-ssh0)*(beta-ssh0)
+      }
+      numb <- numb+1
+    }
+    VaR1PWHS[j-N] <- VaR1val
+  }
+  Z2_mat[i,2] <- Z2f(tail(X,T_-N),VaRHS,ESHS)
+  Z4_mat[i,2] <- Z4f(tail(X,T_-N),VaRHS,ESHS)
+  Z5val <- Z5f(tail(X,T_-N),VaRHS,ESHS)
+  Z51_mat[i,2] <- Z5val[1]
+  Z52_mat[i,2] <- Z5val[2]
+  numex_mat[i,2] <- -sum(tail(X,T_-N) < -VaR1HS)
+  
+  Z2_mat[i,3] <- Z2f(tail(X,T_-N),VaRPWHS,ESPWHS)
+  Z4_mat[i,3] <- Z4f(tail(X,T_-N),VaRPWHS,ESPWHS)
+  Z5val <- Z5f(tail(X,T_-N),VaRPWHS,ESPWHS)
+  Z51_mat[i,3] <- Z5val[1]
+  Z52_mat[i,3] <- Z5val[2]
+  numex_mat[i,3] <- -sum(tail(X,T_-N) < -VaR1PWHS)
+}
+```
+
+
+Gemt data
+```{r}
+save(Z2_mat,Z4_mat,Z51_mat,Z52_mat,numex_mat, file = "BeregningerMedHSv3pt2.RData")
+```
+
+Load data!!!
+```{r}
+load("BeregningerMedHSv3pt2.RData")
+```
+
+
+Power:
+```{r}
+data <- numex_mat[,1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau
+```
+
+REJECTION RATE FOR HS
+```{r}
+dfZ2 <- data.frame(val = Z2_mat[,2],
+                   valT = Z2_mat[,1])
+
+dfZ4 <- data.frame(val = Z4_mat[,2],
+                   valT = Z4_mat[,1])
+
+dfZ51 <- data.frame(val = Z51_mat[,2],
+                   valT = Z51_mat[,1])
+dfZ52 <- data.frame(val = Z52_mat[,2],
+                   valT = Z52_mat[,1])
+
+dfnum <- data.frame(val = numex_mat[,2],
+                    valT = numex_mat[,1])
+```
+
+
+Plots
+```{r}
+data <- data.frame(vals = c(Z2_mat[,2],Z2_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z4_mat[,2],Z4_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+data <- na.omit(data)
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z4 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z51_mat[,2],Z51_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z5_1 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z52_mat[,2],Z52_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(numex_mat[,2],numex_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Number of Exceedences Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+Z2 power for HS
+```{r}
+simdf <- dfZ2
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z4 power for HS
+```{r}
+simdf <- na.omit(dfZ4)
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z5 power for HS
+```{r}
+simdf <- dfZ51
+pvec1 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+simdf <- dfZ52
+pvec2 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+pvals <- numeric(length(pvec1))
+for (j in 1:length(pvec1)){
+  pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+}
+pval <- mean(pvals <= niveau)
+pval
+```
+
+Number of exceedences power for HS
+```{r}
+simdf <- dfnum
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+REJECTION RATE FOR PROBABILITY WEIGHTED HS
+```{r}
+dfZ2 <- data.frame(val = Z2_mat[,3],
+                   valT = Z2_mat[,1])
+
+dfZ4 <- data.frame(val = Z4_mat[,3],
+                   valT = Z4_mat[,1])
+
+dfZ51 <- data.frame(val = Z51_mat[,3],
+                   valT = Z51_mat[,1])
+dfZ52 <- data.frame(val = Z52_mat[,3],
+                   valT = Z52_mat[,1])
+
+dfnum <- data.frame(val = numex_mat[,3],
+                    valT = numex_mat[,1])
+```
+
+Plots
+```{r}
+data <- data.frame(vals = c(Z2_mat[,3],Z2_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z4_mat[,3],Z4_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+data <- na.omit(data)
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z4 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z51_mat[,3],Z51_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z5_1 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z52_mat[,3],Z52_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(numex_mat[,3],numex_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Number of Exceedences Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+Z2 power for PWHS
+```{r}
+simdf <- dfZ2
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z4 power for PWHS
+```{r}
+simdf <- na.omit(dfZ4)
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z5 power for PWHS
+```{r}
+simdf <- dfZ51
+pvec1 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+simdf <- dfZ52
+pvec2 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+pvals <- numeric(length(pvec1))
+for (j in 1:length(pvec1)){
+  pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+}
+pval <- mean(pvals <= niveau)
+pval
+```
+
+Number of exceedences power for PWHS
+```{r}
+simdf <- dfnum
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+HS med flere meget random shocks
+LAD OS VARIERE DGP undervejs
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(rugarch)
+library(fGarch)
+library(QRM)
+library(ggbreak)
+library(quantmod)
+library(tidyverse)
+```
+
+TEST
+```{r}
+Z2f <- function(X,VaR,ES){
+  N <- length(X)
+  sum(X*(X+VaR<0)/(N*alpha*ES))+1
+}
+
+Z3f <- function(X,mu,sigma,nu){
+  N <- length(X)
+  Ta <- floor(T_*alpha)
+  
+  Ut <- pstd(X, mu, sigma, nu)
+  quant <- qstd(Ut, nu = nu)
+  
+  EST <- numeric(N)
+  for (i in 1:N){
+    Y <- mu[i]+sigma[i]*quant
+    EST[i] <- -1/Ta*sum(sort(Y)[1:Ta])
+  }
+  
+  betaint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)}, lower = 0, upper = 1)$value
+  betaqint <- integrate(function(p){pbeta(1-p,T_-Ta,Ta)*qstd(p, nu=nu)}, 
+                        lower = 0, upper = 1)$value
+  
+  EV <- -T_/Ta*(betaint*mu+betaqint*sigma)
+  
+  -mean(EST/EV)+1
+}
+
+Z4f <- function(X,VaR,ES){
+  mean((X+ES)[X+VaR<0])
+}
+
+Z5f <- function(X,VaR,ES){
+  r <- X
+  q <- -VaR
+  e <- -ES
+  n <- length(r)
+  
+  V <- cbind(alpha - (r <= q),
+             e - q + (r <= q) * (q - r) / alpha)
+  
+  H1 <- aperm(replicate(n, diag(2)))
+  hV1 <- apply(H1, 2, function(x) rowSums(x * V))
+  omega1 <- crossprod(hV1) / n
+  
+  t1 <- sqrt(n) * diag(omega1)^(-1/2) * colMeans(hV1)
+}
+```
+
+
+FUNKTIONER
+```{r}
+simf <- function(mu_,phi,omega,alpha,beta,nu){
+  zt <- rstd(T_+burn, nu = nu)
+  X <- numeric(T_+burn)
+  sigma <- numeric(T_+burn)
+  eps <- numeric(T_+burn)
+  mu <- numeric(T_+burn)
+  ones <- rep(1,T_+burn)
+  
+  shockindex <- (burn+N+101):(burn+N+130)
+  ones[shockindex] <- 5
+  ztnew <- rstd(30, nu = 3)
+  zt[shockindex] <- ztnew
+  
+  shockindex <- (burn+N+171):(burn+N+200)
+  ones[shockindex] <- 5
+  ztnew <- rstd(30, nu = 3)
+  zt[shockindex] <- ztnew
+  
+  
+  sigma[1] <- sqrt(omega+beta*omega/(1-alpha-beta))
+  eps[1] <- sigma[1]*zt[1]
+  mu[1] <- 0+mu_
+  X[1] <- mu[1]+eps[1]
+  
+  for (i in 2:(T_+burn)){
+    sigma[i] <- sqrt(omega*ones[i]+alpha*eps[i-1]^2+beta*sigma[i-1]^2)
+    eps[i] <- sigma[i]*zt[i]
+    mu[i] <- phi*X[i-1]+mu_
+    X[i] <- mu[i]+eps[i]
+  }
+  
+  return(list(X = tail(X,T_), mu = tail(mu,T_), sigma = tail(sigma,T_), Xfull = X))
+}
+```
+
+PARAMETRE
+```{r}
+N <- 250 ##In sample
+T_ <- 500 ##Fuld datasæt
+burn <- 250 ##Burn in period
+beta <- 0.01
+alpha <- 0.025
+M <- 10000
+```
+
+```{r}
+mu_ <- 0
+ar <- 0
+omega <- 0.01
+alpha1 <- 0.1
+beta1 <- 0.85
+nu <- 10
+```
+
+Visualisering
+```{r}
+sim <- simf(mu_,ar,omega,alpha1,beta1,nu)
+X <- sim$X
+
+plot(X, type = "l", col = "black", lwd = 2, ylab = "Værdi", xlab = "Tid/Observation", main = "ES estimater ved misspecificering af frihedsgrader")
+```
+
+
+Analyse
+```{r}
+Z2_mat <- matrix(NA,M,3)
+Z4_mat <- matrix(NA,M,3)
+Z51_mat <- matrix(NA,M,3)
+Z52_mat <- matrix(NA,M,3)
+numex_mat <- matrix(NA,M,3)
+
+#Til Weighted HS
+lambda <- 0.995
+prob_weights <- lambda^(N-1:N)*(1-lambda)/(1-lambda^N)
+prob_eq <- rep(1/N,N)
+
+#Simulation begynder her
+set.seed(2025)
+for (i in 1:M){
+  sim <- simf(mu_,ar,omega,alpha1,beta1,nu)
+  X <- sim$X
+  mu <- sim$mu
+  sigma <- sim$sigma
+  
+  EZI <- integrate(function(q) qstd(q, nu=nu),lower = 0,upper = alpha)$value
+  EZIdflow <- integrate(function(q) qstd(q, nu=3),lower = 0,upper = alpha)$value
+  
+  VaR <- -mu+sigma*(-qstd(alpha, nu=nu))
+  ES <- -mu+sigma*(-1/alpha)*EZI
+  VaR1 <- -mu+sigma*(-qstd(beta, nu=nu))
+  
+  VaR[(N+101):(N+130)] <- -mu[(N+101):(N+130)]+sigma[(N+101):(N+130)]*(-qstd(alpha, nu=3))
+  ES[(N+101):(N+130)] <- -mu[(N+101):(N+130)]+sigma[(N+101):(N+130)]*(-1/alpha)*EZIdflow
+  VaR1[(N+101):(N+130)] <- -mu[(N+101):(N+130)]+sigma[(N+101):(N+130)]*(-qstd(beta, nu=3))
+  
+  VaR[(N+171):(N+200)] <- -mu[(N+171):(N+200)]+sigma[(N+171):(N+200)]*(-qstd(alpha, nu=3))
+  ES[(N+171):(N+200)] <- -mu[(N+171):(N+200)]+sigma[(N+171):(N+200)]*(-1/alpha)*EZIdflow
+  VaR1[(N+171):(N+200)] <- -mu[(N+171):(N+200)]+sigma[(N+171):(N+200)]*(-qstd(beta, nu=3))
+  
+  Z2_mat[i,1] <- Z2f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z4_mat[i,1] <- Z4f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z5val <- Z5f(tail(X,T_-N),tail(VaR,T_-N),tail(ES,T_-N))
+  Z51_mat[i,1] <- Z5val[1]
+  Z52_mat[i,1] <- Z5val[2]
+  numex_mat[i,1] <- -sum(tail(X,T_-N) < -tail(VaR1,T_-N))
+  
+  VaRHS <- numeric(T_-N)
+  ESHS <- numeric(T_-N)
+  VaR1HS <- numeric(T_-N)
+  
+  VaRPWHS <- numeric(T_-N)
+  ESPWHS <- numeric(T_-N)
+  VaR1PWHS <- numeric(T_-N)
+  
+  for (j in (N+1):T_){
+    Rolwin <- X[(j-N):(j-1)]
+    
+    #Sorted order
+    sorted_order <- order(Rolwin)
+    sorted_rol <- Rolwin[sorted_order]
+    sorted_probs <- prob_weights[sorted_order]
+    sorted_eq_probs <- prob_eq[sorted_order]
+    
+    #HS
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < alpha) {
+      ptotal <- sum(sorted_eq_probs[1:numb])
+      #VaR
+      if (length(sorted_eq_probs[1:numb])==1){
+        VaRval <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_eq_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_eq_probs[1:numb])
+        VaRval <- f0+(f1-f0)/(ssh1-ssh0)*(alpha-ssh0)
+      }
+      #ES
+      if (ptotal >= alpha){
+        if (length(sorted_eq_probs[1:numb])==1){
+          ESval <- -1/alpha*(alpha*sorted_rol[1:numb])
+        } else {
+          probsadj <- c(sorted_eq_probs[1:(numb-1)],alpha-sum(sorted_eq_probs[1:(numb-1)]))
+          ESval <- -1/alpha*sum(probsadj*sorted_rol[1:numb])
+        }
+      }
+      numb <- numb+1
+    }
+    VaRHS[j-N] <- VaRval
+    ESHS[j-N] <- ESval
+    
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < beta) {
+      ptotal <- sum(sorted_eq_probs[1:numb])
+      #VaR1%
+      if (length(sorted_eq_probs[1:numb])==1){
+        VaR1val <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_eq_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_eq_probs[1:numb])
+        VaR1val <- f0+(f1-f0)/(ssh1-ssh0)*(beta-ssh0)
+      }
+      numb <- numb+1
+    }
+    VaR1HS[j-N] <- VaR1val
+    
+    #PWHS
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < alpha) {
+      ptotal <- sum(sorted_probs[1:numb])
+      #VaR
+      if (length(sorted_probs[1:numb])==1){
+        VaRval <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_probs[1:numb])
+        VaRval <- f0+(f1-f0)/(ssh1-ssh0)*(alpha-ssh0)
+      }
+      #ES
+      if (ptotal >= alpha){
+        if (length(sorted_probs[1:numb])==1){
+          ESval <- -1/alpha*(alpha*sorted_rol[1:numb])
+        } else {
+          probsadj <- c(sorted_probs[1:(numb-1)],alpha-sum(sorted_probs[1:(numb-1)]))
+          ESval <- -1/alpha*sum(probsadj*sorted_rol[1:numb])
+        }
+      }
+      numb <- numb+1
+    }
+    VaRPWHS[j-N] <- VaRval
+    ESPWHS[j-N] <- ESval
+    
+    ptotal <- 0
+    numb <- 1
+    while (ptotal < beta) {
+      ptotal <- sum(sorted_probs[1:numb])
+      #VaR1%
+      if (length(sorted_probs[1:numb])==1){
+        VaR1val <- -sorted_rol[numb]
+      } else {
+        f0 <- -sorted_rol[numb-1]
+        ssh0 <- sum(sorted_probs[1:(numb-1)])
+        f1 <- -sorted_rol[numb]
+        ssh1 <- sum(sorted_probs[1:numb])
+        VaR1val <- f0+(f1-f0)/(ssh1-ssh0)*(beta-ssh0)
+      }
+      numb <- numb+1
+    }
+    VaR1PWHS[j-N] <- VaR1val
+  }
+  Z2_mat[i,2] <- Z2f(tail(X,T_-N),VaRHS,ESHS)
+  Z4_mat[i,2] <- Z4f(tail(X,T_-N),VaRHS,ESHS)
+  Z5val <- Z5f(tail(X,T_-N),VaRHS,ESHS)
+  Z51_mat[i,2] <- Z5val[1]
+  Z52_mat[i,2] <- Z5val[2]
+  numex_mat[i,2] <- -sum(tail(X,T_-N) < -VaR1HS)
+  
+  Z2_mat[i,3] <- Z2f(tail(X,T_-N),VaRPWHS,ESPWHS)
+  Z4_mat[i,3] <- Z4f(tail(X,T_-N),VaRPWHS,ESPWHS)
+  Z5val <- Z5f(tail(X,T_-N),VaRPWHS,ESPWHS)
+  Z51_mat[i,3] <- Z5val[1]
+  Z52_mat[i,3] <- Z5val[2]
+  numex_mat[i,3] <- -sum(tail(X,T_-N) < -VaR1PWHS)
+}
+```
+
+
+Gemt data
+```{r}
+save(Z2_mat,Z4_mat,Z51_mat,Z52_mat,numex_mat, file = "BeregningerMedHSv3pt3.RData")
+```
+
+Load data!!!
+```{r}
+load("BeregningerMedHSv3pt3.RData")
+```
+
+
+Power:
+```{r}
+data <- numex_mat[,1]
+sorted_unique <- sort(unique(data))
+
+ecdf_fun <- ecdf(data)
+cum_probs <- sapply(sorted_unique, ecdf_fun)
+
+niveau <- cum_probs[which.min(abs(cum_probs-0.05))]
+niveau
+```
+
+REJECTION RATE FOR HS
+```{r}
+dfZ2 <- data.frame(val = Z2_mat[,2],
+                   valT = Z2_mat[,1])
+
+dfZ4 <- data.frame(val = Z4_mat[,2],
+                   valT = Z4_mat[,1])
+
+dfZ51 <- data.frame(val = Z51_mat[,2],
+                   valT = Z51_mat[,1])
+dfZ52 <- data.frame(val = Z52_mat[,2],
+                   valT = Z52_mat[,1])
+
+dfnum <- data.frame(val = numex_mat[,2],
+                    valT = numex_mat[,1])
+```
+
+
+Plots
+```{r}
+data <- data.frame(vals = c(Z2_mat[,2],Z2_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z4_mat[,2],Z4_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+data <- na.omit(data)
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z4 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z51_mat[,2],Z51_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z5_1 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z52_mat[,2],Z52_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(numex_mat[,2],numex_mat[,1]), grp = rep(c("HS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "HS" = "red")) +
+  labs(title = "Number of Exceedences Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+Z2 power for HS
+```{r}
+simdf <- dfZ2
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z4 power for HS
+```{r}
+simdf <- na.omit(dfZ4)
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z5 power for HS
+```{r}
+simdf <- dfZ51
+pvec1 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+simdf <- dfZ52
+pvec2 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+pvals <- numeric(length(pvec1))
+for (j in 1:length(pvec1)){
+  pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+}
+pval <- mean(pvals <= niveau)
+pval
+```
+
+Number of exceedences power for HS
+```{r}
+simdf <- dfnum
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+REJECTION RATE FOR PROBABILITY WEIGHTED HS
+```{r}
+dfZ2 <- data.frame(val = Z2_mat[,3],
+                   valT = Z2_mat[,1])
+
+dfZ4 <- data.frame(val = Z4_mat[,3],
+                   valT = Z4_mat[,1])
+
+dfZ51 <- data.frame(val = Z51_mat[,3],
+                   valT = Z51_mat[,1])
+dfZ52 <- data.frame(val = Z52_mat[,3],
+                   valT = Z52_mat[,1])
+
+dfnum <- data.frame(val = numex_mat[,3],
+                    valT = numex_mat[,1])
+```
+
+Plots
+```{r}
+data <- data.frame(vals = c(Z2_mat[,3],Z2_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z4_mat[,3],Z4_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+data <- na.omit(data)
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z4 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z51_mat[,3],Z51_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z5_1 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(Z52_mat[,3],Z52_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Z5_2 Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+
+data <- data.frame(vals = c(numex_mat[,3],numex_mat[,1]), grp = rep(c("PWHS","Korrekt"), each = M))
+ggplot(data, aes(x = vals, fill = grp)) +
+  geom_histogram(position = "identity", binwidth = 1, alpha = 0.5) +
+  scale_fill_manual(values = c("Korrekt" = "green", "PWHS" = "red")) +
+  labs(title = "Number of Exceedences Histogram", x="Værdi", y="Antal", fill="") +
+  theme_minimal()
+```
+
+Z2 power for PWHS
+```{r}
+simdf <- dfZ2
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z4 power for PWHS
+```{r}
+simdf <- na.omit(dfZ4)
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+Z5 power for PWHS
+```{r}
+simdf <- dfZ51
+pvec1 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+simdf <- dfZ52
+pvec2 <- 1-ecdf(simdf$valT)(simdf$val)
+  
+pvals <- numeric(length(pvec1))
+for (j in 1:length(pvec1)){
+  pvals[j] <- min(2 * sum(1 / (1:2)) * min(sort(c(pvec1[j],pvec2[j])) / (1:2)), 1)
+}
+pval <- mean(pvals <= niveau)
+pval
+```
+
+Number of exceedences power for PWHS
+```{r}
+simdf <- dfnum
+
+quant <- quantile(simdf$valT, probs = niveau)
+pval <- ecdf(simdf$val)(quant)
+pval
+```
+
+
+
+
+
+
+
